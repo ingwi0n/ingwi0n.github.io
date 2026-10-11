@@ -478,7 +478,8 @@ details.more[open] > summary { margin-bottom: 10px; }
 .map-land { fill: var(--map-land); }
 .map-shape { stroke: var(--surface); stroke-width: 0.5; stroke-linejoin: round; }
 .map-unit, .map-dots { outline: none; cursor: pointer; }
-.map-unit.front .map-shape { stroke: var(--ink); stroke-width: 0.8; stroke-dasharray: 2 1.2; }
+.map-fronts { pointer-events: none; }
+.front-line { fill: none; stroke: var(--map-hover); stroke-linejoin: round; }
 .map-outlines { pointer-events: none; }
 .map-outline { fill: none; stroke: var(--map-hover); stroke-width: 1.2; stroke-linejoin: round; }
 .map-outlines .pin .map-outline { stroke-width: 1.6; }
@@ -559,6 +560,8 @@ details.more[open] > summary { margin-bottom: 10px; }
 .tc-num { fill: var(--ink-2); font: 400 10px var(--font-ui); font-variant-numeric: tabular-nums; }
 .tc-seats { fill: var(--ink); font: 700 10.5px var(--font-ui); font-variant-numeric: tabular-nums; }
 .tc-track { fill: var(--surface-2); }
+.tc-bar { transform-box: fill-box; transform-origin: left center; }
+.tc-flash { opacity: 0; }
 .tc-tick { stroke: var(--tick); stroke-width: 1; }
 .tc-legal { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 2 2; }
 .tc-note { font-size: 11.5px; color: var(--ink-2); margin-top: 6px; }
@@ -1861,11 +1864,16 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
   // ---------------------------------------------------------------------------------------------
   // Tooltip
   const tip = $('tip');
+  let hovered = null; // { chamber, name, x, y } while a map card is shown by hover or focus
   function showTip(target, build, evt, cls) {
-    tip.textContent = '';
-    tip.className = `tip${cls ? ` ${cls}` : ''}`;
-    build(tip);
-    tip.classList.add('on');
+    // A map card already showing this render's data only needs moving, not rebuilding.
+    const same = build.cardKey && tip.classList.contains('on') && tip.dataset.cardKey === build.cardKey;
+    if (!same) {
+      tip.className = `tip${cls ? ` ${cls}` : ''}`;
+      swapCard(tip, build);
+      tip.dataset.cardKey = build.cardKey || '';
+      tip.classList.add('on');
+    }
     const r = target.getBoundingClientRect();
     const tw = tip.offsetWidth;
     const th = tip.offsetHeight;
@@ -1877,7 +1885,7 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
     tip.style.left = `${x}px`;
     tip.style.top = `${y}px`;
   }
-  function hideTip() { tip.classList.remove('on'); }
+  function hideTip() { tip.classList.remove('on'); hovered = null; }
   function attachTip(node, build, cls, enabled) {
     node.addEventListener('pointermove', (e) => { if (!enabled || enabled()) showTip(node, build, e, cls); });
     node.addEventListener('pointerleave', hideTip);
@@ -2588,20 +2596,68 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
     const max = Math.min(1, Math.ceil((top * 1.06) / 0.05) * 0.05) || 0.05;
     const x = (v) => labelW + Math.min(1, v / max) * trackW;
     const svg = sv('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}`, class: 'tc-chart', 'aria-hidden': 'true' });
+    // Geometry of what is drawn, so the next version of this card can animate from it.
+    const geom = { rows: {}, legal: null };
     spec.rows.forEach((r, i) => {
       const y = i * rowH;
+      const w = Math.max(1, x(r.share) - labelW);
+      const ticks = r.ticks.filter((t) => t <= max).map(x);
+      geom.rows[r.id] = { y, w, ticks, seats: r.seats };
       const name = r.label.length > 14 ? `${r.label.slice(0, 13)}…` : r.label;
-      svg.append(sv('text', { x: 0, y: y + 11, class: 'tc-label' }, name));
-      svg.append(sv('rect', { x: labelW, y: y + 3, width: trackW, height: 10, rx: 1.5, class: 'tc-track' }));
-      svg.append(sv('rect', { x: labelW, y: y + 3, width: Math.max(1, x(r.share) - labelW), height: 10, rx: 1.5, style: `fill:${r.color}` }));
-      for (const t of r.ticks) if (t <= max) svg.append(sv('line', { x1: x(t), x2: x(t), y1: y + 1, y2: y + 15, class: 'tc-tick' }));
-      svg.append(sv('text', { x: labelW + trackW + pctW - 2, y: y + 11, 'text-anchor': 'end', class: 'tc-num' }, `${(r.share * 100).toFixed(1)}%`));
-      svg.append(sv('text', { x: W, y: y + 11, 'text-anchor': 'end', class: 'tc-seats' }, r.delta ? `${r.seats} (${signed(r.delta)})` : String(r.seats)));
+      const row = sv('g', { class: 'tc-row', 'data-id': r.id, transform: `translate(0 ${y})` });
+      row.append(sv('rect', { x: W - seatW + 4, y: 1, width: seatW - 4, height: 14, rx: 3, class: 'tc-flash', style: `fill:${r.color}` }));
+      row.append(sv('text', { x: 0, y: 11, class: 'tc-label' }, name));
+      row.append(sv('rect', { x: labelW, y: 3, width: trackW, height: 10, rx: 1.5, class: 'tc-track' }));
+      row.append(sv('rect', { x: labelW, y: 3, width: w, height: 10, rx: 1.5, class: 'tc-bar', style: `fill:${r.color}` }));
+      ticks.forEach((tx, k) => row.append(sv('line', { x1: tx, x2: tx, y1: 1, y2: 15, class: 'tc-tick', 'data-k': k })));
+      row.append(sv('text', { x: labelW + trackW + pctW - 2, y: 11, 'text-anchor': 'end', class: 'tc-num' }, `${(r.share * 100).toFixed(1)}%`));
+      row.append(sv('text', { x: W, y: 11, 'text-anchor': 'end', class: 'tc-seats' }, r.delta ? `${r.seats} (${signed(r.delta)})` : String(r.seats)));
+      svg.append(row);
     });
     if (spec.legal && spec.legal <= max) {
-      svg.append(sv('line', { x1: x(spec.legal), x2: x(spec.legal), y1: 0, y2: H, class: 'tc-legal' }));
+      geom.legal = x(spec.legal);
+      svg.append(sv('line', { x1: geom.legal, x2: geom.legal, y1: 0, y2: H, class: 'tc-legal' }));
     }
+    svg._geom = geom;
     return svg;
+  }
+
+  // Animate a rebuilt chart from the previous version's geometry: rows slide to their new rank,
+  // bars and seat ticks glide to their new values, and a seat count that changed flashes.
+  const reducedMotion = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : { matches: false };
+  function animateChart(svg, prev) {
+    if (reducedMotion.matches || !svg.animate) return;
+    const opts = { duration: 280, easing: 'cubic-bezier(0.2, 0.7, 0.2, 1)' };
+    const near = (a, b) => Math.abs(a - b) < 0.5;
+    for (const row of svg.querySelectorAll('.tc-row')) {
+      const cur = svg._geom.rows[row.dataset.id];
+      const old = prev.rows[row.dataset.id];
+      if (!old) { row.animate([{ opacity: 0 }, { opacity: 1 }], opts); continue; }
+      if (!near(old.y, cur.y)) row.animate([{ transform: `translate(0px, ${old.y}px)` }, { transform: `translate(0px, ${cur.y}px)` }], opts);
+      if (!near(old.w, cur.w)) row.querySelector('.tc-bar').animate([{ transform: `scaleX(${old.w / cur.w})` }, { transform: 'scaleX(1)' }], opts);
+      for (const tick of row.querySelectorAll('.tc-tick')) {
+        const k = +tick.dataset.k;
+        if (old.ticks[k] == null) tick.animate([{ opacity: 0 }, { opacity: 1 }], opts);
+        else if (!near(old.ticks[k], cur.ticks[k])) tick.animate([{ transform: `translateX(${old.ticks[k] - cur.ticks[k]}px)` }, { transform: 'none' }], opts);
+      }
+      if (old.seats !== cur.seats) row.querySelector('.tc-flash').animate([{ opacity: 0.35 }, { opacity: 0.35, offset: 0.3 }, { opacity: 0 }], { duration: 1200, easing: 'ease-out' });
+    }
+    const legal = svg.querySelector('.tc-legal');
+    if (legal && prev.legal != null && !near(prev.legal, svg._geom.legal)) {
+      legal.animate([{ transform: `translateX(${prev.legal - svg._geom.legal}px)` }, { transform: 'none' }], opts);
+    }
+  }
+
+  // Replace a card's contents with a fresh build, animating from the old chart when the card
+  // still shows the same constituency.
+  function swapCard(t, build, ...args) {
+    const old = t.querySelector('.tc-chart');
+    const was = t.dataset.unit || '';
+    t.textContent = '';
+    delete t.dataset.unit;
+    build(t, ...args);
+    const svg = t.querySelector('.tc-chart');
+    if (old && old._geom && svg && was && t.dataset.unit === was) animateChart(svg, old._geom);
   }
 
   function mapNotes(chamber, u, ms) {
@@ -2614,6 +2670,7 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
   }
 
   function buildHoverCard(t, chamber, idx, u, ms, isPinned) {
+    t.dataset.unit = `${chamber}|${u.name}`;
     const size = ms.mode === '2023' ? u.size2023 : u.size;
     const view = ms.mode === '2023' ? '2023 result' : ms.mode === 'sim' ? '2026 simulation'
       : `2026 vs ${ms.base === '2023' ? '2023' : chamber === 'congress' ? 'core-only Frente Amplio' : 'separate lists'}`;
@@ -2637,6 +2694,7 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
   // another part of the map is clicked (another constituency pins that one instead) or Esc.
   const mapCards = { congress: new Map(), senate: new Map() }; // name -> { g, build }
   let pinned = null; // { chamber, name, fx, fy, above }
+  let mapGen = 0; // bumped on every map render, so a card knows whether its data is current
   // Hover and pinned outlines are drawn on an overlay rather than by moving the area to the front:
   // moving the node under the pointer as it is pressed swallows the click (notably on touch).
   const outlines = { congress: { layer: null, hover: null }, senate: { layer: null, hover: null } };
@@ -2690,8 +2748,7 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
     const card = pinnedCard();
     if (!card) { unpin(); return; }
     drawOutlines(pinned.chamber);
-    pinTip.textContent = '';
-    card.build(pinTip, true);
+    swapCard(pinTip, card.build, true);
     pinTip.classList.add('on');
     placePinned();
   }
@@ -2741,15 +2798,17 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
     const svg = $(P);
     svg.textContent = '';
     mapCards[chamber].clear();
+    const gen = ++mapGen;
     svg.setAttribute('viewBox', `0 0 ${MAP.width} ${MAP.height}`);
     for (const d of Object.values(MAP.context)) svg.append(sv('path', { d, class: 'map-land' }));
     const [ix, iy, iw, ih] = MAP.canarias;
     svg.append(sv('rect', { x: ix, y: iy, width: iw, height: ih, rx: 2, class: 'map-inset' }));
     svg.append(sv('text', { x: ix + 3, y: iy + 8, class: 'map-inset-label' }, 'Canarias'));
     const shapeLayer = sv('g');
+    const frontLayer = sv('g', { class: 'map-fronts', 'aria-hidden': 'true' });
     const outlineLayer = sv('g', { class: 'map-outlines', 'aria-hidden': 'true' });
     const dotLayer = sv('g');
-    svg.append(shapeLayer, outlineLayer, dotLayer);
+    svg.append(shapeLayer, frontLayer, outlineLayer, dotLayer);
     outlines[chamber] = { layer: outlineLayer, hover: null };
 
     for (const [idx, u] of units.entries()) {
@@ -2790,6 +2849,8 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
 
       const tip = mapTipText(chamber, u, ms);
       const tipBuild = (t, isPinned) => buildHoverCard(t, chamber, idx, u, ms, isPinned);
+      tipBuild.cardKey = `${chamber}|${u.name}|${gen}`;
+      const track = (e) => { if (!pinned) hovered = { chamber, name: u.name, x: e ? e.clientX : null, y: e ? e.clientY : null }; };
       const g = sv('g', { class: `map-unit${u.front && ms.mode !== '2023' ? ' front' : ''}`, tabindex: '0', role: 'img', 'aria-label': tip.join('. '), 'data-unit': u.name });
       for (const f of shapesOf(u.name)) {
         if (f.circle) g.append(sv('circle', { cx: f.circle[0], cy: f.circle[1], r: f.circle[2], class: 'map-shape', style: `fill:${fill}` }));
@@ -2802,6 +2863,8 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
       g.addEventListener('focus', hoverOn);
       g.addEventListener('blur', hoverOff);
       attachTip(g, tipBuild, 'card', notPinned);
+      g.addEventListener('pointermove', track);
+      g.addEventListener('focus', () => track());
       shapeLayer.append(g);
       mapCards[chamber].set(u.name, { g, build: tipBuild });
 
@@ -2833,11 +2896,54 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
       dg.addEventListener('pointerenter', hoverOn);
       dg.addEventListener('pointerleave', hoverOff);
       attachTip(dg, tipBuild, 'card', notPinned);
+      dg.addEventListener('pointermove', track);
       dotLayer.append(dg);
     }
+    drawFrontOutline(svg, frontLayer, chamber, units.filter((u) => u.front && ms.mode !== '2023'));
     renderMapLegend(chamber, units);
     renderFlows(chamber, units);
     if (pinned && pinned.chamber === chamber) showPinned();
+    // A card open under a resting pointer (or keyboard focus) follows the new numbers too.
+    if (hovered && hovered.chamber === chamber && !pinned) {
+      const card = mapCards[chamber].get(hovered.name);
+      if (!card) { hideTip(); return; }
+      const { x, y } = hovered;
+      setHover(chamber, card.g);
+      showTip(card.g, card.build, x == null ? undefined : { clientX: x, clientY: y }, 'card');
+      hovered = { chamber, name: card.g.dataset.unit, x, y };
+    }
+  }
+
+  // Joint-list constituencies get one solid outline around each group of neighbouring areas. It is
+  // a thick stroke of every area, masked so only the part outside all of them shows: it sits just
+  // outside the area's own edge, so neighbours drawn later cannot cover it, and a border shared by
+  // two joint-list areas carries no line. The simplified borders of neighbours do not match exactly,
+  // so the mask is morphologically closed (dilate, then erode) to fill the slivers between them.
+  const FRONT_RING = { width: 0.9, gap: 0.3, close: 1.2 }; // visible width; edge clearance; sliver closing radius
+  function drawFrontOutline(svg, layer, chamber, frontUnits) {
+    if (!frontUnits.length) return;
+    const id = `front-mask-${chamber}`;
+    const pad = 10;
+    const box = { x: -pad, y: -pad, width: MAP.width + 2 * pad, height: MAP.height + 2 * pad };
+    const close = sv('filter', { id: `${id}-close`, filterUnits: 'userSpaceOnUse', ...box },
+      sv('feMorphology', { operator: 'dilate', radius: FRONT_RING.close, result: 'grown' }),
+      sv('feMorphology', { in: 'grown', operator: 'erode', radius: FRONT_RING.close }));
+    const mask = sv('mask', { id, maskUnits: 'userSpaceOnUse', ...box });
+    const inside = sv('g', { filter: `url(#${id}-close)` });
+    mask.append(sv('rect', { ...box, fill: '#fff' }), inside);
+    const ring = sv('g', { class: 'front-ring', mask: `url(#${id})` });
+    const { width, gap } = FRONT_RING;
+    for (const u of frontUnits) {
+      for (const f of shapesOf(u.name)) {
+        const make = (attrs) => (f.circle
+          ? sv('circle', { cx: f.circle[0], cy: f.circle[1], r: f.circle[2], ...attrs })
+          : sv('path', { d: f.d, 'fill-rule': 'evenodd', ...attrs }));
+        inside.append(make({ fill: '#000', stroke: '#000', 'stroke-width': gap, 'stroke-linejoin': 'round' }));
+        ring.append(make({ class: 'front-line', 'stroke-width': gap + 2 * width }));
+      }
+    }
+    svg.prepend(sv('defs', null, close, mask));
+    layer.append(ring);
   }
 
   function renderMapLegend(chamber, units) {
@@ -2865,16 +2971,23 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
       const key = h('span', { class: 'map-key' }, icon, 'bars above the line: seats gained; below: seats lost');
       legend.prepend(key);
     }
+    if (ms.mode !== '2023' && units.some((u) => u.front)) {
+      const icon = sv('svg', { width: 18, height: 14, viewBox: '0 0 18 14', class: 'key-front', 'aria-hidden': 'true' },
+        sv('rect', { x: 2, y: 2, width: 14, height: 10, rx: 2, class: 'front-line', style: 'fill:var(--map-base);stroke-width:1.6' }));
+      legend.prepend(h('span', { class: 'map-key' }, icon, 'joint left list'));
+    }
     const frontOn = chamber === 'senate' && state.front.scope !== 'none';
+    const ink = mapIsDark ? 'white' : 'black'; // the outline colour follows the theme, like hover outlines
     let text = '';
     if (ms.mode === '2023') text = chamber === 'congress' ? 'Result of 23 July 2023, tinted by the most-voted party (Madrid had 37 seats and Cádiz 9). Sumar then included Podemos, Compromís, Ara Més and CHA.' : 'Senators elected on 23 July 2023 (208; Ibiza and Formentera voted together), tinted by the strongest list.';
     else if (ms.mode === 'sim') {
       text = chamber === 'congress' ? 'Current scenario. Areas are tinted by the most-voted party, darker where its share is larger.'
-        : `Current scenario. Areas are tinted by the strongest list, darker where it leads more${frontOn ? '; dashed outlines mark where a joint left list runs' : ''}.`;
+        : `Current scenario. Areas are tinted by the strongest list, darker where it leads more${frontOn ? `; ${ink} outlines mark where a joint left list runs` : ''}.`;
     }
     else if (ms.base === '2023') text = 'Each bar is one party\u2019s seat change in that constituency compared with 2023, one step per seat; areas are tinted by the biggest gainer. Sumar\u2019s 2023 seats are compared with Frente Amplio\u2019s.';
     else if (chamber === 'congress') text = state.joiners.length ? `Seats that move because ${state.joiners.map(shortName).join(', ')} run inside Frente Amplio.` : 'No party has joined Frente Amplio yet, so nothing moves. Switch some on in the sidebar.';
-    else text = frontOn ? 'Seats that move because of the joint left lists.' : 'Joint lists are off, so nothing moves. Choose where they run in the sidebar.';
+    else text = frontOn ? `Seats that move because of the joint left lists (outlined in ${ink}).` : 'Joint lists are off, so nothing moves. Choose where they run in the sidebar.';
+    if (chamber === 'senate' && ms.mode === 'change' && ms.base === '2023' && frontOn) text += ` ${ink === 'white' ? 'White' : 'Black'} outlines mark where a joint left list runs.`;
     note.textContent = text;
   }
 
