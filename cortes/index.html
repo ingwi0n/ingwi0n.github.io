@@ -415,31 +415,14 @@ select {
 .status.no { color: var(--muted); }
 
 /* Seat bars */
-/* Investiture bloc against PP + Vox */
-.blocfig { display: grid; gap: 8px; margin: 0; }
-.blocfig figcaption { font-size: 13px; color: var(--ink-2); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
-.bloc-rows { display: grid; gap: 5px; }
-.bloc-row { display: grid; grid-template-columns: 34px 30px minmax(0, 1fr) 30px; align-items: center; gap: 8px; }
-.bloc-heads { font-size: 11.5px; color: var(--muted); }
-.bloc-head-track { display: grid; grid-template-columns: 1fr auto 1fr; }
-.bloc-head-track span:nth-child(2) { color: var(--ink); font-weight: 600; }
-.bloc-head-track span:last-child { text-align: right; }
-.bloc-year { font-size: 12px; color: var(--muted); }
-.bloc-n { font-size: 16px; font-weight: 700; }
-.bloc-n.r { text-align: right; }
-.bloc-row.then .bloc-n { font-size: 13px; font-weight: 600; color: var(--ink-2); }
-.bloc-track { position: relative; }
-.bloc-bar { display: flex; height: 28px; border-radius: 4px; overflow: hidden; background: var(--surface-2); }
-.bloc-row.then .bloc-bar { height: 14px; }
-.bloc-seg { flex: none; height: 100%; box-shadow: inset -1px 0 0 var(--surface); outline: none; }
-.bloc-seg:focus-visible { box-shadow: inset 0 0 0 2px var(--ink); }
-.bloc-mid { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 0; border-left: 2px solid var(--ink); transform: translateX(-1px); pointer-events: none; }
-.bloc-summary { font-size: 13px; color: var(--ink-2); margin: 0; }
 .seatfig { display: grid; gap: 8px; margin: 0; }
 .seatfig figcaption { font-size: 13px; color: var(--ink-2); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
 .seatbar-wrap { position: relative; padding-top: 22px; }
 .seatbar { display: flex; gap: 2px; height: 44px; }
 .seatbar.thin { height: 26px; }
+.seatbar.then { margin-top: 3px; height: 18px; }
+.seg-bar .seg-label { line-height: 1; }
+.seatfig .bar-note { font-size: 12px; color: var(--muted); }
 .seg-bar {
   min-width: 0;
   display: flex; align-items: center; justify-content: center;
@@ -732,13 +715,10 @@ footer.foot {
           <h2 id="congress-h" data-es="Congreso de los Diputados">Congress of Deputies</h2>
         </header>
         <div class="kpis" id="congress-kpis"></div>
-        <figure class="blocfig">
-          <figcaption><span data-es="Bloque de investidura frente a PP + Vox">Investiture bloc vs PP + Vox</span></figcaption>
-          <div class="bloc-rows" id="bloc-rows"></div>
-        </figure>
         <figure class="seatfig">
           <figcaption><span id="congress-bar-caption">Seats by party, left to right</span></figcaption>
-          <div class="seatbar-wrap"><div class="seatbar" id="congress-bar" role="list"></div><div class="majority" id="congress-maj"><span>176</span></div></div>
+          <div class="seatbar-wrap"><div class="seatbar" id="congress-bar" role="list"></div><div class="seatbar thin then" id="congress-bar-2023" role="list"></div><div class="majority" id="congress-maj"><span>176</span></div></div>
+          <figcaption class="bar-note"><span data-es="Barra inferior: resultado de 2023">2023 result</span></figcaption>
           <div class="legend" id="congress-legend"></div>
         </figure>
 
@@ -2078,7 +2058,7 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
     }
     return barWidths.get(container);
   }
-  function renderBar(container, majorityEl, seats, total, majority, describe) {
+  function renderBar(container, majorityEl, seats, total, majority, describe, labelOf = seatLabel) {
     container.textContent = '';
     const ids = Object.keys(seats).filter((id) => seats[id] > 0).sort(byOrder);
     const width = barWidth(container);
@@ -2093,7 +2073,7 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
         role: 'listitem',
         'aria-label': `${longName(id)}: ${n} ${L('seats', 'escaños')}`,
       });
-      const full = `${seatLabel(id)} ${n}`;
+      const full = `${labelOf(id)} ${n}`;
       const label = px > full.length * 7.2 + 12 ? full : px > String(n).length * 7.5 + 6 ? String(n) : '';
       seg.append(h('span', { class: 'seg-label' }, label));
       attachTip(seg, (t) => describe(t, id, n));
@@ -2155,47 +2135,6 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
     return congress2023Totals;
   }
 
-  // Head-to-head bar: the investiture bloc grows from the left, PP + Vox from the right, others sit
-  // between; the centre line is the majority (a side crossing it has 176+). Scenario above 2023.
-  function renderBlocs(totals) {
-    const rows = $('bloc-rows');
-    rows.textContent = '';
-    const split = (t) => {
-      const ids = Object.keys(t).filter((id) => t[id] > 0);
-      const inv = ids.filter(isInvestiture).sort(byOrder);
-      const right = ['PP', 'VOX'].filter((id) => t[id] > 0);
-      const others = ids.filter((id) => !isInvestiture(id) && !right.includes(id)).sort(byOrder);
-      const sumIds = (list) => list.reduce((a, id) => a + t[id], 0);
-      return { inv, right, others, nInv: sumIds(inv), nRight: sumIds(right), nOth: sumIds(others) };
-    };
-    const now = split(totals);
-    const then = split(totals2023());
-    const row = (label, t, sp, other, cls) => {
-      const bar = h('div', { class: 'bloc-bar' });
-      const seg = (id, side) => {
-        const n = t[id];
-        const name = label === '2023' ? label2023(id) : longName(id);
-        const el = h('div', { class: `bloc-seg ${side}`, style: `width:${(n / 350) * 100}%;background:${colorOf(side === 'oth' ? 'OTH' : id)}`, tabindex: '0', role: 'img', 'aria-label': `${label} ${name}: ${n}` });
-        attachTip(el, (tt) => tipLines(tt, [[h('b', null, String(n)), label === '2023' ? L(` seats in 2023 · ${name}`, ` escaños en 2023 · ${name}`) : L(` seats in this scenario · ${name}`, ` escaños en este escenario · ${name}`)],
-          `${label === '2023' ? L('This scenario', 'Este escenario') : '2023'}: ${(other[id] || 0)}`]));
-        return el;
-      };
-      for (const id of sp.inv) bar.append(seg(id, 'inv'));
-      for (const id of sp.others) bar.append(seg(id, 'oth'));
-      for (const id of sp.right) bar.append(seg(id, 'right'));
-      return h('div', { class: `bloc-row ${cls}` },
-        h('span', { class: 'bloc-year' }, label),
-        h('span', { class: 'bloc-n num' }, String(sp.nInv)),
-        h('div', { class: 'bloc-track' }, bar, h('span', { class: 'bloc-mid', 'aria-hidden': 'true' })),
-        h('span', { class: 'bloc-n num r' }, String(sp.nRight)));
-    };
-    rows.append(
-      h('div', { class: 'bloc-row bloc-heads', 'aria-hidden': 'true' }, h('span'), h('span'),
-        h('div', { class: 'bloc-head-track' }, h('span', null, L('Investiture bloc', 'Bloque de investidura')), h('span', null, '176'), h('span', null, 'PP + Vox')), h('span')),
-      row('2026', totals, now, totals2023(), 'now'),
-      row('2023', totals2023(), then, totals, 'then'));
-  }
-
   function renderCongress() {
     const { res, core, effects, combos, shares } = last;
     const totals = res.congress.totals;
@@ -2216,7 +2155,6 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
       kpi('PP + Vox', String(ppVox), `PP ${totals.PP || 0} · Vox ${totals.VOX || 0}`, majorityPill(ppVox, 176)),
       kpi(L('Left + PNV, Junts, CC', 'Izquierda + PNV, Junts, CC'), String(investiture), [deltaSpan(investiture - invSeats(totals2023())), L(' vs 2023', ' frente a 2023')], majorityPill(investiture, 176)),
     );
-    renderBlocs(totals);
 
     renderBar($('congress-bar'), $('congress-maj'), totals, 350, 176, (t, id, n) => {
       const share = res.congress.share[id] || 0;
@@ -2228,6 +2166,10 @@ globalThis.ELECTION_DATA = {"congress2023":{"A Coruña":{"rows":[["PP",292272,4]
       tipLines(t, lines);
     });
     $('congress-bar-caption').textContent = L('Seats by party', 'Escaños por partido');
+    const t23 = totals2023();
+    renderBar($('congress-bar-2023'), null, t23, 350, 176, (t, id, n) => tipLines(t, [
+      [h('b', null, String(n)), L(` seats in 2023 · ${label2023(id)}`, ` escaños en 2023 · ${label2023(id)}`)],
+      `2026: ${totals[id] || 0}`]), label2023);
     renderLegend($('congress-legend'), Object.keys(totals));
     renderSeatMap('congress');
     renderPacts('c');
