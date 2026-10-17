@@ -1,4 +1,10 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+</head>
+<body>
 <title>Cortes 2026 Simulator</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -597,6 +603,7 @@ details.more[open] > summary { margin-bottom: 10px; }
 .tc-seats { fill: var(--ink); font: 700 10.5px var(--font-ui); font-variant-numeric: tabular-nums; }
 .tc-track { fill: var(--surface-2); }
 .tc-bar { transform-box: fill-box; transform-origin: left center; }
+.tc-bar2 { fill: none; stroke: var(--ink); stroke-width: 1; transform-box: fill-box; transform-origin: left center; }
 .tc-flash { opacity: 0; }
 .tc-tick { stroke: var(--tick); stroke-width: 1; }
 .tc-legal { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 2 2; }
@@ -685,6 +692,20 @@ footer.foot {
           <div class="field-head"><label for="retention" data-es="Votantes de los socios que siguen">Partner voters who follow</label><output id="retention-out" for="retention"></output></div>
           <input type="range" id="retention" min="70" max="110" step="1">
         </div>
+      </section>
+
+      <section class="panel" aria-labelledby="tac-h">
+        <h2 id="tac-h" data-es="Voto útil">Useful vote</h2>
+        <div class="field">
+          <div class="field-head"><label for="tactical" data-es="Votantes de izquierdas dispuestos a cambiar">Left voters willing to switch</label><output id="tactical-out" for="tactical"></output></div>
+          <input type="range" id="tactical" min="0" max="100" step="1">
+        </div>
+        <label class="toggle" for="tactical-psoe">
+          <input type="checkbox" id="tactical-psoe">
+          <span class="switch" aria-hidden="true"></span>
+          <span class="dot" style="background:var(--p-PSOE)"></span>
+          <span class="label"><b>incl. PSOE</b></span>
+        </label>
       </section>
 
       <div class="shared-slot" id="shared-slot-congress">
@@ -920,7 +941,8 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
 //      did not run in 2023 (SALF, Aliança Catalana, Adelante Andalucía outside Cádiz).
 //   2. Raking (iterative proportional fitting) of that matrix to national vote targets: a
 //      proportional swing per party that also keeps every province summing to 100%.
-//   3. Congress: coalition lists, then D'Hondt per province with the 3% threshold.
+//   3. Congress: coalition lists, an optional useful vote (left voters reallocated to maximise the
+//      left bloc's seats), then D'Hondt per province with the 3% threshold.
 //   4. Senate: 2023 Senate result per constituency (votes per candidate) swung by each party's
 //      provincial ratio, optional joint left lists, then the limited vote (top-N candidates).
 (function (root) {
@@ -1395,10 +1417,140 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     return out;
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // Useful vote (voto útil): tactical coordination among the left's voters in one constituency.
+  // Each mobile list may give up to a share `tau` of its vote to the other mobile lists. The
+  // allocation maximises the seats of the whole left bloc (a fixed left list, such as PSOE when it
+  // is not mobile, counts in the objective but keeps its votes), then moves as few votes as
+  // possible. Exact two-phase search over the target T, from the top: D'Hondt gives the left T
+  // seats when its T-th best quotient beats the rivals' (seats−T+1)-th best, so a list's k-th seat
+  // needs k × q votes with q = that rival quotient + 1. Phase 1 asks whether T is reachable from
+  // the lists' floors (lifting any subset of under-threshold lists to the threshold); phase 2
+  // enumerates seat vectors and keeps the one that moves the fewest votes, handing any spare
+  // votes back to the lists that gave them. Votes are conserved and non-left lists are untouched.
+  // Returns { T: left seats, alloc: { id: votes } for the mobile lists, moved: votes that switch }.
+  function optimizeTactical(votes, seats, threshold, valid, mobile, tau) {
+    const min = threshold * valid;
+    const eps = 1e-9;
+    const ids = Object.keys(votes);
+    const m = mobile.length;
+    const v = mobile.map((id) => votes[id] || 0);
+    const V = sum(v);
+    const f = v.map((x) => (1 - tau) * x); // what each list keeps at least
+    const identity = { alloc: Object.fromEntries(mobile.map((id, i) => [id, v[i]])), moved: 0 };
+    const fixedLeft = ids.filter((id) => blocOf(id) === 'left' && !mobile.includes(id));
+    const rq = [];
+    for (const id of ids) if (blocOf(id) !== 'left' && votes[id] >= min) for (let k = 1; k <= seats; k++) rq.push(votes[id] / k);
+    rq.sort((a, b) => b - a);
+    const g = (x, q) => (x >= min ? Math.floor(x / q) : 0);
+    for (let T = seats; T >= 0; T--) {
+      const q = (seats - T < rq.length ? rq[seats - T] : 0) + 1;
+      const need = T - sum(fixedLeft.map((id) => g(votes[id], q)));
+      const cur = sum(v.map((x) => g(x, q)));
+      if (cur >= need) return { T, ...identity };
+      if (!m) continue;
+      const under = [];
+      f.forEach((x, i) => { if (x < min) under.push(i); });
+      let best = null;
+      for (let mask = 0; mask < (1 << under.length); mask++) {
+        const l = f.slice();
+        under.forEach((i, j) => { if (mask & (1 << j)) l[i] = min; });
+        let B = V - sum(l);
+        if (B < -eps) continue;
+        // Phase 1: the most seats reachable from these floors (whole seats at the floors, the
+        // cheapest completions of partial seats, then whole seats from what is left).
+        const active = [];
+        l.forEach((x, i) => { if (x >= min - eps) active.push(i); });
+        if (!active.length) continue;
+        const x1 = l.slice();
+        let got = 0;
+        for (const i of active) got += Math.floor(l[i] / q);
+        const rem = active.map((i) => [(Math.floor(l[i] / q) + 1) * q - l[i], i]).sort((a, b) => a[0] - b[0]);
+        for (const [c, i] of rem) if (c <= B + eps) { B -= c; got++; x1[i] += c; }
+        const extra = Math.floor(B / q);
+        if (extra > 0) { got += extra; x1[active[0]] += extra * q; }
+        if (got < need) continue;
+        // Phase 2: among seat vectors k_i in [seats at the floor, seats now + the shortfall], the
+        // allocation x_i = k_i × q (at least the floor and the threshold) that moves the fewest votes.
+        const delta = need - cur;
+        const kmin = l.map((x) => g(x, q));
+        const kmax = v.map((x, i) => Math.max(kmin[i], g(x, q) + delta));
+        const x = new Array(m);
+        const rec = (i, sumK, sumX, moved) => {
+          if (sumX > V + eps || (best && moved >= best.moved - eps)) return;
+          if (i === m) { if (sumK >= need) best = { x: x.slice(), moved }; return; }
+          for (let k = kmin[i]; k <= kmax[i]; k++) {
+            const xi = k === 0 ? l[i] : Math.max(l[i], min, k * q);
+            x[i] = xi;
+            rec(i + 1, sumK + k, sumX + xi, moved + Math.max(0, xi - v[i]));
+          }
+        };
+        rec(0, 0, 0, 0);
+        if (!best) best = { x: x1, moved: sum(x1.map((xi, i) => Math.max(0, xi - v[i]))) };
+      }
+      if (!best) continue;
+      const x = best.x;
+      const spare = V - sum(x);
+      const give = x.map((xi, i) => Math.max(0, v[i] - xi));
+      const G = sum(give);
+      if (spare > eps && G > 0) for (let i = 0; i < m; i++) x[i] += (spare * give[i]) / G;
+      return { T, alloc: Object.fromEntries(mobile.map((id, i) => [id, x[i]])), moved: best.moved };
+    }
+    return { T: 0, ...identity };
+  }
+
+  // The lists whose voters may switch under a useful-vote setting: the left lists standing here,
+  // without PSOE unless it is included.
+  function mobileLists(ids, tactical) {
+    return ids.filter((id) => blocOf(id) === 'left' && (tactical.includePSOE || id !== 'PSOE'));
+  }
+
+  // Share of each donor list's vote that goes to each recipient when `before` becomes `after`
+  // ({ donor: { recipient: fraction } }), or null when nothing moves. Donors' votes go pro rata to
+  // the recipients' gains, so applying the fractions to `before` gives `after` exactly.
+  function transferFractions(before, after) {
+    const give = {};
+    const gain = {};
+    let G = 0;
+    for (const id of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      const d = (after[id] || 0) - (before[id] || 0);
+      if (d > 1e-9) { gain[id] = d; G += d; } else if (d < -1e-9) give[id] = -d;
+    }
+    if (!(G > 0)) return null;
+    const out = {};
+    for (const [d, x] of Object.entries(give)) {
+      out[d] = {};
+      for (const [r, y] of Object.entries(gain)) out[d][r] = (x / before[d]) * (y / G);
+    }
+    return out;
+  }
+  function applyFractions(votes, fractions) {
+    const out = { ...votes };
+    for (const [d, to] of Object.entries(fractions)) {
+      const have = votes[d];
+      if (!(have > 0)) continue;
+      for (const [r, f] of Object.entries(to)) {
+        const amt = have * f;
+        out[d] -= amt;
+        out[r] = (out[r] || 0) + amt;
+      }
+    }
+    return out;
+  }
+  // The per-province transfer fractions a Congress run applied (aligned with ctx.provinces), to
+  // fix the same useful vote in other runs (`scenario.tactical.plan`).
+  function tacticalFractions(congress) {
+    return congress.byProvince.map((p) => (p.tactical ? p.tactical.fractions : null));
+  }
+
+  // `scenario.tactical` = { mobile: 0..1 (share of each mobile list's voters willing to switch),
+  // includePSOE, plan? }: with a plan, its fixed per-province fractions are applied instead of
+  // optimising (Monte Carlo, municipal maps).
   function runCongress(ctx, S, scenario) {
     const joiners = new Set(scenario.fa.joiners);
     const retention = scenario.fa.retention;
     const threshold = scenario.threshold != null ? scenario.threshold : 0.03;
+    const tac = scenario.tactical && (scenario.tactical.plan || scenario.tactical.mobile > 0) ? scenario.tactical : null;
     const totals = {};
     const votes = {};
     let validTotal = 0;
@@ -1407,8 +1559,25 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       const away = awayIn(scenario, pr.community, joiners);
       const { lists, lost } = buildLists((id) => row[COL[id]], IDS, joiners, retention, away);
       const valid = pr.valid * (1 - lost);
-      const ids = [...lists.keys()];
-      const v = ids.map((id) => lists.get(id) * pr.valid);
+      let ids = [...lists.keys()];
+      let v = ids.map((id) => lists.get(id) * pr.valid);
+      let tactical = null;
+      if (tac) {
+        const polled = Object.fromEntries(ids.map((id, i) => [id, v[i]]));
+        let alloc = null;
+        if (tac.plan) {
+          if (tac.plan[pr.idx]) alloc = applyFractions(polled, tac.plan[pr.idx]);
+        } else {
+          const opt = optimizeTactical(polled, pr.seats, threshold, valid, mobileLists(ids, tac), tac.mobile);
+          if (opt.moved > 1e-9) alloc = { ...polled, ...opt.alloc };
+        }
+        const fractions = alloc && transferFractions(polled, alloc);
+        if (fractions) {
+          ids = Object.keys(alloc);
+          v = ids.map((id) => alloc[id]);
+          tactical = { polled, fractions, moved: sum(ids.map((id, i) => Math.max(0, v[i] - (polled[id] || 0)))) };
+        }
+      }
       const seats = dhondt(v, pr.seats, threshold, valid);
       const seatMap = {};
       const voteMap = {};
@@ -1422,10 +1591,61 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       const margin = ls && ls.challenger >= 0
         ? { holder: ids[ls.holder], challenger: ids[ls.challenger], votesNeeded: ls.votesNeeded }
         : null;
-      return { name: pr.name, community: pr.community, seats: seatMap, votes: voteMap, valid, size: pr.seats, margin };
+      return { name: pr.name, community: pr.community, seats: seatMap, votes: voteMap, valid, size: pr.seats, margin, tactical };
     });
     const share = Object.fromEntries(Object.entries(votes).map(([id, v]) => [id, v / validTotal]));
     return { byProvince, totals, share, validTotal };
+  }
+
+  // The useful-vote plan behind the map: for each province, the seats without useful vote (`base`),
+  // at the scenario's share (`cur`) and with full coordination (`full`), the votes behind each, the
+  // lists that receive votes, the left bloc's gain and the seat changes, the votes moved, and the
+  // smallest share of switchers (1% steps) that wins the first extra seat.
+  function tacticalPlan(ctx, S, scenario) {
+    const tac = scenario.tactical || {};
+    const includePSOE = !!tac.includePSOE;
+    const threshold = scenario.threshold != null ? scenario.threshold : 0.03;
+    const at = (mobile) => runCongress(ctx, S, { ...scenario, tactical: mobile > 0 ? { includePSOE, mobile } : null });
+    const base = at(0);
+    const full = at(1);
+    const cur = tac.mobile > 0 ? at(tac.mobile) : base;
+    const left = (seats) => blocTotals(seats).left;
+    const gainedBy = {};
+    const lostBy = {};
+    let gain = 0;
+    let provinces = 0;
+    let moved = 0;
+    const byProvince = base.byProvince.map((b, i) => {
+      const f = full.byProvince[i];
+      const c = cur.byProvince[i];
+      const dLeft = left(f.seats) - left(b.seats);
+      const rise = (id) => f.votes[id] - (b.votes[id] || 0);
+      const recipients = Object.keys(f.votes).filter((id) => rise(id) > 1e-6).sort((p, q) => rise(q) - rise(p));
+      const diff = {};
+      for (const id of new Set([...Object.keys(b.seats), ...Object.keys(f.seats)])) {
+        const d = (f.seats[id] || 0) - (b.seats[id] || 0);
+        if (d) { diff[id] = d; add(d > 0 ? gainedBy : lostBy, id, d); }
+      }
+      let firstAt = null;
+      if (dLeft > 0) {
+        // The maximum is non-decreasing in the share, so the first gain can be found by bisection.
+        const mobile = mobileLists(Object.keys(b.votes), { includePSOE });
+        const seatsAt = (t) => optimizeTactical(b.votes, b.size, threshold, b.valid, mobile, t / 100).T;
+        let lo = 1;
+        let hi = 100;
+        while (lo < hi) { const mid = (lo + hi) >> 1; if (seatsAt(mid) > left(b.seats)) hi = mid; else lo = mid + 1; }
+        firstAt = lo;
+      }
+      const mv = f.tactical ? f.tactical.moved : 0;
+      if (dLeft) { gain += dLeft; provinces++; }
+      moved += mv;
+      return {
+        name: b.name, community: b.community, size: b.size, valid: b.valid,
+        base: b.seats, cur: c.seats, full: f.seats, polled: b.votes, alloc: c.votes, optimal: f.votes,
+        recipients, gain: dLeft, curGain: left(c.seats) - left(b.seats), diff, moved: mv, firstAt,
+      };
+    });
+    return { byProvince, gain, provinces, moved, movedShare: moved / base.validTotal, gainedBy, lostBy, base, cur, full };
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -1458,12 +1678,16 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
   }
 
   // Lists and their shares of the valid vote, as runCongress forms them in the municipality's province.
+  // A useful-vote plan (`scenario.tactical.plan`, the province's fixed transfer fractions) applies
+  // to the municipality's lists as it does to its province's.
   function municipalLists(ctx, scenario, prIdx, shares) {
     const joiners = new Set(scenario.fa.joiners);
     const away = awayIn(scenario, ctx.provinces[prIdx].community, joiners);
     const { lists, lost } = buildLists((id) => shares[COL[id]], IDS, joiners, scenario.fa.retention, away);
-    const out = {};
+    let out = {};
     for (const [id, v] of lists) out[id] = v / (1 - lost);
+    const plan = scenario.tactical && scenario.tactical.plan;
+    if (plan && plan[prIdx]) out = applyFractions(out, plan[prIdx]);
     return out;
   }
 
@@ -1718,6 +1942,12 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       const chosen = runSenate(ctx, central.S, scenario).byConstituency.filter((c) => c.front).map((c) => c.name);
       scenario = { ...scenario, senate: { ...scenario.senate, front: { ...front, scope: 'custom', constituencies: chosen } } };
     }
+    // Likewise the useful vote: voters decide before the result, so the transfers planned on the
+    // central projection are applied as fixed fractions in every simulation (and can misfire).
+    const tac = scenario.tactical;
+    if (tac && tac.mobile > 0 && !tac.plan) {
+      scenario = { ...scenario, tactical: { ...tac, plan: tacticalFractions(runCongress(ctx, central.S, scenario)) } };
+    }
     const res = { n: 0, congress: [], senate: [], blocs: [], senateBlocs: [] };
     function one() {
       const T = new Float64Array(K);
@@ -1797,6 +2027,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     PARTIES, SENATE_ONLY, INFO, IDS, COL, JOINABLE, SUMAR_PARTNERS, LABELS,
     buildContext, pollAverage, targetsFromPoll, resolveTargets, provincialShares, rake,
     dhondt, limitedVote, hare, runCongress, runSenate, run, joinEffects, blocTotals, blocOf,
+    optimizeTactical, mobileLists, transferFractions, applyFractions, tacticalFractions, tacticalPlan,
     municipalBase, municipalShares, municipalLists, municipalSenateBase, municipalSenateLists,
     createMonteCarlo, rng, round1,
   };
@@ -2028,6 +2259,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       front: { scope: 'deals', members: ['PSOE', 'FA'], efficiency: 95, custom: [], deals: Object.fromEntries(DEALS.map((x) => [x.id, !!x.default])) },
       spread: 2,
       newFactor: 90,
+      tactical: { share: 0, psoe: false },
       view: 'congress',
       maps: {
         congress: { mode: 'change', base: '2023', focus: '', level: 'prov' },
@@ -2059,6 +2291,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
         },
         standDowns: { ...d.standDowns, ...(s.standDowns || {}) },
         targets: { ...d.targets, ...(s.targets || {}) },
+        tactical: { ...d.tactical, ...(s.tactical || {}) },
         maps: {
           congress: { ...d.maps.congress, ...((s.maps && s.maps.congress) || {}) },
           senate: { ...d.maps.senate, ...((s.maps && s.maps.senate) || {}) },
@@ -2083,6 +2316,8 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       adjust: state.adjustCat && !eu ? CAT_ADJ : {},
       fa: { joiners: over.joiners || state.joiners, retention: state.retention / 100 },
       standDowns: over.standDowns || activeStandDowns(),
+      // Useful vote (Congress only); `tactical: null` in `over` switches it off.
+      tactical: 'tactical' in over ? over.tactical : { mobile: state.tactical.share / 100, includePSOE: state.tactical.psoe },
       senate: {
         spread: state.spread / 100,
         newPartyFactor: state.newFactor / 100,
@@ -2144,8 +2379,15 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     const noFront = state.front.scope === 'none' ? res : M.run(ctx, scenarioFor({ front: NO_FRONT }), shares);
     const effects = M.joinEffects(ctx, scen, shares);
     const combos = COMBOS.map((c) => ({ ...c, congress: M.runCongress(ctx, shares.S, scenarioFor({ joiners: c.joiners })) }));
-    last = { scen, shares, res, core, noFront, effects, combos };
+    // The useful-vote plan: the same scenario without useful vote (`plan.base`), at the slider and
+    // with full coordination, province by province.
+    const plan = M.tacticalPlan(ctx, shares.S, scen);
+    last = { scen, shares, res, core, noFront, effects, combos, plan };
     last.pacts = pactEffects(shares);
+  }
+  // A Congress run's useful-vote transfers, fixed into a scenario for the municipal projection.
+  function withPlan(scen, congress) {
+    return scen.tactical && scen.tactical.mobile > 0 ? { ...scen, tactical: { ...scen.tactical, plan: M.tacticalFractions(congress) } } : scen;
   }
 
   // Batch state changes made in one event, then recompute once. (A timer rather than
@@ -2344,6 +2586,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       [h('b', null, String(n)), L(` seats in 2023 · ${label2023(id)}`, ` escaños en 2023 · ${label2023(id)}`)],
       `2026: ${totals[id] || 0}`]), label2023);
     renderLegend($('congress-legend'), Object.keys(totals));
+    syncTacticalOut();
     renderSeatMap('congress');
     renderPacts('c');
     renderEffects(effects, combos, coreTotals, shares);
@@ -2727,7 +2970,26 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     }
     return best;
   }
-  const MAP_MODES = () => [['2023', L('2023 result', 'Resultado 2023')], ['sim', L('2026 simulation', 'Simulación 2026')], ['change', L('Change', 'Cambio')]];
+  const MAP_MODES = (chamber) => [['2023', L('2023 result', 'Resultado 2023')], ['sim', L('2026 simulation', 'Simulación 2026')], ['change', L('Change', 'Cambio')],
+    ...(chamber === 'congress' ? [['tactical', L('Useful vote', 'Voto útil')]] : [])];
+  // Which unit field a change view compares against: the 2023 result, the comparison scenario
+  // (Frente Amplio core only / separate lists) or, on the Congress map, the scenario without useful vote.
+  const beforeKeyOf = (chamber, ms) => (ms.base === '2023' ? 'y2023' : ms.base === 'tactical' && chamber === 'congress' ? 'noTac' : 'alt');
+  const baseText = (chamber, ms, form) => {
+    if (ms.base === '2023') return '2023';
+    if (ms.base === 'tactical' && chamber === 'congress') return form === 'short' ? L('No useful vote', 'Sin voto útil') : L('no useful vote', 'sin voto útil');
+    if (chamber === 'congress') return form === 'short' ? L('Core only', 'Solo núcleo') : L('core-only Frente Amplio', 'FA solo núcleo');
+    return form === 'short' ? L('Separate', 'Separadas') : L('separate lists', 'listas separadas');
+  };
+  // The pair of unit fields a comparison view draws (null in the result views): the change view
+  // against its base, or the useful-vote view (full coordination against no useful vote).
+  function compareOf(chamber, ms) {
+    if (ms.mode === 'change') return { before: beforeKeyOf(chamber, ms), after: 'sim', beforeLabel: baseText(chamber, ms, 'short'), afterLabel: ms.base === '2023' ? '2026' : L('Scenario', 'Escenario') };
+    if (ms.mode === 'tactical' && chamber === 'congress') return { before: 'noTac', after: 'tacFull', beforeLabel: L('No useful vote', 'Sin voto útil'), afterLabel: L('Useful vote', 'Voto útil'), tactical: true };
+    return null;
+  }
+  // Useful-vote map tint: darker the fewer switchers the first extra seat needs (3% … 90%).
+  const tacticalTint = (id, firstAt) => tint(id, Math.round(Math.max(30, Math.min(88, 88 - ((firstAt || 3) - 3) * (58 / 87)))));
 
   // Seats won in 2023, by today's party ids (Sumar's seats are filed under Frente Amplio).
   const CONGRESS_2023 = ctx.provinces.map((p) => {
@@ -2775,9 +3037,11 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       return ctx.provinces.map((p, i) => {
         const r = last.res.congress.byProvince[i];
         const shareSim = Object.fromEntries(Object.entries(r.votes).map(([id, v]) => [id, v / r.valid]));
+        const plan = last.plan.byProvince[i];
         return {
           name: p.name, size: p.seats, size2023: p.seats2023, y2023: CONGRESS_2023[i],
           sim: r.seats, alt: last.core.congress.byProvince[i].seats, front: false,
+          noTac: plan.base, tacFull: plan.full, plan,
           share2023: CONGRESS_2023_SHARE[i], shareSim,
         };
       });
@@ -2822,6 +3086,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     const lists = view === 'coalitions';
     return units.map((u) => ({ ...u, y2023: g(u.y2023), sim: g(lists && u.simLists ? u.simLists : u.sim),
       alt: g(lists && u.altLists ? u.altLists : u.alt), share2023: g(u.share2023),
+      noTac: u.noTac && g(u.noTac), tacFull: u.tacFull && g(u.tacFull),
       shareSim: g(lists && u.shareLists ? u.shareLists : u.shareSim) }));
   }
   function toBlocs(map) {
@@ -2893,11 +3158,12 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     }
     $(`${P}-zoom-in`).setAttribute('aria-label', L('Zoom in', 'Acercar'));
     $(`${P}-zoom-out`).setAttribute('aria-label', L('Zoom out', 'Alejar'));
-    for (const [id, text] of MAP_MODES()) {
+    for (const [id, text] of MAP_MODES(chamber)) {
       $(`${P}-mode`).append(h('button', { class: 'btn', type: 'button', 'data-mode': id, onclick: () => setMap(chamber, 'mode', id) }, text));
     }
     const bases = [['2023', L('vs 2023 result', 'frente a 2023')],
-      ['scenario', chamber === 'congress' ? L('vs Frente Amplio core only', 'frente a FA solo núcleo') : L('vs separate lists', 'frente a listas separadas')]];
+      ['scenario', chamber === 'congress' ? L('vs Frente Amplio core only', 'frente a FA solo núcleo') : L('vs separate lists', 'frente a listas separadas')],
+      ...(chamber === 'congress' ? [['tactical', L('vs no useful vote', 'frente a sin voto útil')]] : [])];
     for (const [id, text] of bases) {
       $(`${P}-base`).append(h('button', {
         class: 'btn', type: 'button', 'data-base': id,
@@ -2909,7 +3175,10 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
   function syncMapControls(chamber, units) {
     const P = mapPrefix(chamber);
     const ms = state.maps[chamber];
-    for (const b of $(`${P}-mode`).children) b.setAttribute('aria-pressed', String(b.dataset.mode === ms.mode));
+    for (const b of $(`${P}-mode`).children) {
+      b.setAttribute('aria-pressed', String(b.dataset.mode === ms.mode));
+      b.hidden = b.dataset.mode === 'tactical' && ms.level === 'muni'; // seats are won by province
+    }
     for (const b of $(`${P}-level`).children) b.setAttribute('aria-pressed', String(b.dataset.level === (ms.level || 'prov')));
     // The comparison buttons stay in place in every view (hiding them would move the map); outside
     // the change view none is pressed, and choosing one switches to the change view.
@@ -2934,13 +3203,20 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     const lines = [`${u.name} · ${size} ${size === 1 ? L('seat', 'escaño') : L('seats', 'escaños')}`];
     if (ms.mode === '2023') lines.push(`2023: ${textOf(u.y2023, label2023)}`);
     else if (ms.mode === 'sim') lines.push(`2026: ${textOf(u.sim, seatLabel)}`);
-    else {
-      const before = ms.base === '2023' ? u.y2023 : u.alt;
+    else if (ms.mode === 'tactical' && u.plan) {
+      const p = u.plan;
+      lines.push(p.gain > 0
+        ? L(`Useful vote: ${signed(p.gain)} for the left from ${p.firstAt}% switching (${textOf(p.base, seatLabel)} → ${textOf(p.full, seatLabel)})`,
+          `Voto útil: ${signed(p.gain)} para la izquierda desde el ${p.firstAt}% de cambios (${textOf(p.base, seatLabel)} → ${textOf(p.full, seatLabel)})`)
+        : L('Useful vote: no seat to gain', 'Voto útil: ningún escaño que ganar'));
+    } else {
+      const before = u[beforeKeyOf(chamber, ms)];
       const ids = [...new Set([...Object.keys(before), ...Object.keys(u.sim)])].sort(byOrder);
       const changes = ids.map((id) => [id, before[id] || 0, u.sim[id] || 0]).filter(([, b, a]) => a !== b);
       if (!changes.length) {
         lines.push(ms.base === '2023' ? L('Same seats as in 2023', 'Los mismos escaños que en 2023')
-          : chamber === 'congress' ? L('Same seats with Frente Amplio core only', 'Los mismos escaños con FA solo núcleo') : L('Same seats with separate lists', 'Los mismos escaños con listas separadas'));
+          : ms.base === 'tactical' && chamber === 'congress' ? L('Same seats without useful vote', 'Los mismos escaños sin voto útil')
+            : chamber === 'congress' ? L('Same seats with Frente Amplio core only', 'Los mismos escaños con FA solo núcleo') : L('Same seats with separate lists', 'Los mismos escaños con listas separadas'));
       }
       for (const [id, b, a] of changes) {
         const name = id === 'FA' && ms.base === '2023' ? 'Sumar → Frente Amplio' : seatLabel(id);
@@ -3035,7 +3311,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       ticksFor = (id) => limitedTicks(shares, id, M, profile);
     }
     // Seat change against the comparison in the change view (a joint list is compared with its members).
-    const base = ms.mode === 'change' ? (ms.base === '2023' ? u.y2023 : u.alt) : null;
+    const base = ms.mode === 'change' ? u[beforeKeyOf(chamber, ms)] : null;
     const run = !is2023 && chamber === 'senate' ? last.res.senate.byConstituency[idx] : null;
     const partsOf = (id) => (run && id === 'FRONT' && run.frontParts ? Object.keys(run.frontParts) : run && run.shared && run.shared[id] ? Object.keys(run.shared[id]) : [id]);
     const baseSeats = (id) => partsOf(id).reduce((s2, m) => s2 + (base[m] || 0), 0);
@@ -3058,7 +3334,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     const trackW = W - labelW - pctW - seatW - 4;
     const rowH = 16;
     const H = spec.rows.length * rowH + 2;
-    const top = Math.max(0, ...spec.rows.map((r) => r.share), ...spec.rows.flatMap((r) => r.ticks.filter((t) => t < 0.9)));
+    const top = Math.max(0, ...spec.rows.map((r) => Math.max(r.share, r.share2 || 0)), ...spec.rows.flatMap((r) => r.ticks.filter((t) => t < 0.9)));
     const max = Math.min(1, Math.ceil((top * 1.06) / 0.05) * 0.05) || 0.05;
     const x = (v) => labelW + Math.min(1, v / max) * trackW;
     const svg = sv('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}`, class: 'tc-chart', 'aria-hidden': 'true' });
@@ -3075,6 +3351,12 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       row.append(sv('text', { x: 0, y: 11, class: 'tc-label' }, name));
       row.append(sv('rect', { x: labelW, y: 3, width: trackW, height: 10, rx: 1.5, class: 'tc-track' }));
       row.append(sv('rect', { x: labelW, y: 3, width: w, height: 10, rx: 1.5, class: 'tc-bar', style: `fill:${r.color}` }));
+      // A second, outlined bar (the useful-vote card: the optimal share next to the polled one).
+      if (r.share2 != null) {
+        const w2 = Math.max(1, x(r.share2) - labelW);
+        geom.rows[r.id].w2 = w2;
+        row.append(sv('rect', { x: labelW + 0.5, y: 3.5, width: Math.max(0.5, w2 - 1), height: 9, rx: 1.5, class: 'tc-bar2' }));
+      }
       ticks.forEach((tx, k) => row.append(sv('line', { x1: tx, x2: tx, y1: 1, y2: 15, class: 'tc-tick', 'data-k': k })));
       row.append(sv('text', { x: labelW + trackW + pctW - 2, y: 11, 'text-anchor': 'end', class: 'tc-num' }, `${nf(r.share * 100)}%`));
       const right = r.right != null ? r.right : r.delta ? `${r.seats} (${signed(r.delta)})` : String(r.seats);
@@ -3102,6 +3384,8 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       if (!old) { row.animate([{ opacity: 0 }, { opacity: 1 }], opts); continue; }
       if (!near(old.y, cur.y)) row.animate([{ transform: `translate(0px, ${old.y}px)` }, { transform: `translate(0px, ${cur.y}px)` }], opts);
       if (!near(old.w, cur.w)) row.querySelector('.tc-bar').animate([{ transform: `scaleX(${old.w / cur.w})` }, { transform: 'scaleX(1)' }], opts);
+      const bar2 = row.querySelector('.tc-bar2');
+      if (bar2 && old.w2 != null && !near(old.w2, cur.w2)) bar2.animate([{ transform: `scaleX(${old.w2 / cur.w2})` }, { transform: 'scaleX(1)' }], opts);
       for (const tick of row.querySelectorAll('.tc-tick')) {
         const k = +tick.dataset.k;
         if (old.ticks[k] == null) tick.animate([{ opacity: 0 }, { opacity: 1 }], opts);
@@ -3136,17 +3420,50 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     return notes;
   }
 
+  // Useful-vote card: each left list's polled share (solid) and its share under full coordination
+  // (outline), seats without → with, ticks at what each seat needs under the optimal allocation.
+  function buildTacticalCard(t, u, ms, isPinned) {
+    const p = u.plan;
+    t.dataset.unit = `congress|${u.name}`;
+    t.append(h('div', { class: 'tc-head' }, h('b', null, u.name), h('span', null, `${u.size} ${u.size === 1 ? L('seat', 'escaño') : L('seats', 'escaños')} · ${L('Useful vote', 'Voto útil')}`)));
+    const legal = 0.03;
+    const polled = Object.fromEntries(Object.entries(p.polled).map(([id, v]) => [id, v / p.valid]));
+    const optimal = Object.fromEntries(Object.entries(p.optimal).map(([id, v]) => [id, v / p.valid]));
+    const seatsOf = (m, id) => m[id] || 0;
+    const rows = Object.keys(polled)
+      .filter((id) => M.blocOf(id) === 'left' && (polled[id] >= 0.005 || seatsOf(p.base, id) || seatsOf(p.full, id)))
+      .sort((a, b) => polled[b] - polled[a])
+      .slice(0, 8)
+      .map((id) => ({
+        id, label: seatLabel(id), color: colorOf(id), share: polled[id], share2: optimal[id] || 0,
+        seats: seatsOf(p.full, id), delta: seatsOf(p.full, id) - seatsOf(p.base, id),
+        right: seatsOf(p.base, id) !== seatsOf(p.full, id) ? `${seatsOf(p.base, id)} → ${seatsOf(p.full, id)}` : String(seatsOf(p.base, id)),
+        ticks: dhondtTicks(optimal, id, u.size, legal).slice(0, Math.max(seatsOf(p.base, id), seatsOf(p.full, id)) + 1),
+      }));
+    if (rows.length) {
+      t.append(h('div', { class: 'tc-cols' }, h('span', null, L('Vote share · optimal', 'Voto · óptimo')), h('span', null, L('Seats', 'Escaños'))));
+      t.append(chartSvg({ rows, legal, M: u.size }));
+    }
+    const losers = Object.keys(p.diff).filter((id) => p.diff[id] < 0 && M.blocOf(id) !== 'left').sort(byOrder).map(seatLabel).join(', ');
+    t.append(h('div', { class: 'tc-note' }, p.gain > 0
+      ? L(`${p.firstAt}% of left voters switch · ${signed(p.gain)} from ${losers}`, `Cambia el ${p.firstAt}% de los votantes de izquierdas · ${signed(p.gain)} a costa de ${losers}`)
+      : L('No seat to gain', 'Ningún escaño que ganar')));
+    for (const n of mapNotes('congress', u, ms)) t.append(h('div', { class: 'tc-note' }, n));
+    if (isPinned) t.append(h('div', { class: 'tc-pin' }, L('Pinned · Esc to close', 'Fijada · Esc para cerrar')));
+  }
+
   function buildHoverCard(t, chamber, idx, u, ms, isPinned) {
+    if (chamber === 'congress' && ms.mode === 'tactical' && u.plan) { buildTacticalCard(t, u, ms, isPinned); return; }
     t.dataset.unit = `${chamber}|${u.name}`;
     const size = ms.mode === '2023' ? u.size2023 : u.size;
     const view = ms.mode === '2023' ? L('2023 result', 'Resultado 2023') : ms.mode === 'sim' ? L('2026 simulation', 'Simulación 2026')
-      : `2026 ${L('vs', 'frente a')} ${ms.base === '2023' ? '2023' : chamber === 'congress' ? L('core-only Frente Amplio', 'FA solo núcleo') : L('separate lists', 'listas separadas')}`;
+      : `2026 ${L('vs', 'frente a')} ${baseText(chamber, ms)}`;
     t.append(h('div', { class: 'tc-head' }, h('b', null, u.name), h('span', null, `${size} ${size === 1 ? L('seat', 'escaño') : L('seats', 'escaños')} · ${view}`)));
     const gv = groupView(ms);
     if (gv) {
       const lists = gv === 'coalitions';
       const after = groupMap(ms.mode === '2023' ? u.y2023 : (lists && u.simLists) || u.sim, gv);
-      const before = ms.mode === 'change' ? groupMap(ms.base === '2023' ? u.y2023 : (lists && u.altLists) || u.alt, gv) : null;
+      const before = ms.mode === 'change' ? groupMap(ms.base === '2023' ? u.y2023 : ms.base === 'tactical' && u.noTac ? u.noTac : (lists && u.altLists) || u.alt, gv) : null;
       const keys = [...new Set([...Object.keys(after), ...Object.keys(before || {})])].sort(byOrder);
       const parts = keys.filter((k) => after[k] || (before && before[k])).map((k) => {
         const d = before ? (after[k] || 0) - (before[k] || 0) : 0;
@@ -3266,14 +3583,15 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     syncMapControls(chamber, partyUnits);
     const muni = ms.level === 'muni' && (chamber === 'congress' || !!MUNI.senateCols);
     muniChrome(chamber, muni);
-    if (muni) { renderMuniMap(chamber, ms); return; }
+    // Seats are won by province, so the useful-vote view falls back to the projection on the municipal map.
+    if (muni) { renderMuniMap(chamber, ms.mode === 'tactical' ? { ...ms, mode: 'sim' } : ms); return; }
     if (!(mapCards[chamber] instanceof Map)) mapCards[chamber] = new Map();
     const gv = groupView(ms);
     const blocView = gv === 'blocs';
     const units = gv ? groupUnits(partyUnits, gv) : partyUnits;
     const test = focusTest(ms.focus);
-    const isChange = ms.mode === 'change';
-    const beforeKey = ms.base === '2023' ? 'y2023' : 'alt';
+    const cmp = compareOf(chamber, ms);
+    const isChange = !!cmp;
     const dots = DOTS[chamber];
     const svg = $(P);
     svg.textContent = '';
@@ -3292,7 +3610,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     outlines[chamber] = { layer: outlineLayer, hover: null };
 
     for (const [idx, u] of units.entries()) {
-      const after = ms.mode === '2023' ? u.y2023 : u.sim;
+      const after = ms.mode === '2023' ? u.y2023 : cmp ? u[cmp.after] : u.sim;
       const marks = [];
       let net = 0;
       let topGain = null;
@@ -3303,7 +3621,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       }
       const bars = [];
       if (isChange) {
-        const before = u[beforeKey];
+        const before = u[cmp.before];
         let topD = 0;
         for (const id of [...new Set([...Object.keys(before), ...Object.keys(after)])].sort(byOrder)) {
           const d = (after[id] || 0) - (before[id] || 0);
@@ -3326,6 +3644,12 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
           const second = Math.max(0, ...Object.entries(shares).filter(([id]) => id !== lead && id !== 'NEUTRAL').map(([, v]) => v));
           fill = tint(lead, Math.min(88, Math.max(34, 34 + (shares[lead] - second) * 220)));
         } else if (lead) fill = tint(lead, Math.min(88, Math.max(34, 30 + (shares[lead] - 0.1) * 150)));
+      } else if (cmp.tactical) {
+        // Useful vote: the list that should receive votes, darker the fewer switchers it needs.
+        const p = partyUnits[idx].plan;
+        const rec = p.gain > 0 && p.recipients[0];
+        const recKey = rec && (gv ? Object.keys(groupMap({ [rec]: 1 }, gv))[0] : rec);
+        if (recKey && (!test || test(recKey))) fill = tacticalTint(recKey, p.firstAt);
       } else if (changed) {
         if (test) fill = net > 0 && topGain ? tint(topGain, 58) : net < 0 ? 'var(--map-loss)' : 'var(--map-base)';
         else fill = topGain ? tint(topGain, 52) : 'var(--map-loss)';
@@ -3385,8 +3709,8 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       dotLayer.append(dg);
     }
     drawFrontOutline(svg, frontLayer, chamber, units.filter((u) => u.front && ms.mode !== '2023'));
-    renderMapLegend(chamber, units);
-    renderFlows(chamber, units);
+    renderMapLegend(chamber, units, cmp);
+    renderFlows(chamber, units, cmp);
     if (pinned && pinned.chamber === chamber) showPinned();
     // A card open under a resting pointer (or keyboard focus) follows the new numbers too.
     if (hovered && hovered.chamber === chamber && !pinned) {
@@ -3518,7 +3842,11 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     if (kind === '2023') out = units.map((u) => { const s = chamber === 'congress' ? u.share23 : u.senate && u.senate.share23; return s ? { lists: s, parts: null } : null; });
     else if (chamber === 'congress') {
       if (!muniBase.congress) muniBase.congress = units.map((u) => (u.votes ? M.municipalBase(ctx, u.prov, u.votes) : null));
-      const scen = kind === 'sim' ? last.scen : scenarioFor({ joiners: [], front: NO_FRONT });
+      // The useful vote moves each municipality's votes with its province's transfer fractions
+      // ('noTac': the scenario without useful vote).
+      const scen = kind === 'sim' ? withPlan(last.scen, last.res.congress)
+        : kind === 'noTac' ? scenarioFor({ tactical: null })
+          : withPlan(scenarioFor({ joiners: [], front: NO_FRONT }), last.core.congress);
       out = units.map((u, i) => (u.votes ? { lists: M.municipalLists(ctx, scen, u.prov, M.municipalShares(ctx, last.shares.S, u.prov, muniBase.congress[i])), parts: null } : null));
     } else {
       if (!muniBase.senate) muniBase.senate = units.map((u) => (u.senate ? M.municipalSenateBase(ctx, u.c, u.senate.votes, u.senate.valid) : null));
@@ -3528,6 +3856,8 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     }
     return (muniCache[key] = out);
   }
+  // Which municipal lists a change view compares against (see beforeKeyOf).
+  const muniBaseKind = (chamber, ms) => (ms.base === '2023' ? '2023' : ms.base === 'tactical' && chamber === 'congress' ? 'noTac' : 'alt');
 
   // Party-level reading of a municipality's lists, as on the province maps: a joint list counts as
   // its largest member, Ibiza's 2023 PSOE–Sumar list as PSOE.
@@ -3556,7 +3886,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
   function muniPaint(chamber, ms) {
     const { units } = muniDecode();
     const after = muniShares(chamber, ms.mode === '2023' ? '2023' : 'sim');
-    const before = ms.mode === 'change' ? muniShares(chamber, ms.base === '2023' ? '2023' : 'alt') : null;
+    const before = ms.mode === 'change' ? muniShares(chamber, muniBaseKind(chamber, ms)) : null;
     const gv = groupView(ms);
     const one = singleFocus(ms.focus);
     const test = focusTest(ms.focus);
@@ -3807,14 +4137,14 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     t.dataset.unit = `${chamber}|m${i}`;
     const where = senate ? ctx.senate[u.c].name : ctx.provinces[u.prov].name;
     const view = ms.mode === '2023' ? L('2023 result', 'Resultado 2023') : ms.mode === 'sim' ? L('2026 projection', 'Proyección 2026')
-      : `2026 ${L('vs', 'frente a')} ${ms.base === '2023' ? '2023' : senate ? L('separate lists', 'listas separadas') : L('core-only Frente Amplio', 'FA solo núcleo')}`;
+      : `2026 ${L('vs', 'frente a')} ${baseText(chamber, ms)}`;
     t.append(h('div', { class: 'tc-head' }, h('b', null, u.name), h('span', null, `${where} · ${view}`)));
     const after = muniShares(chamber, ms.mode === '2023' ? '2023' : 'sim')[i];
     if (!after) {
       t.append(h('div', { class: 'tc-note' }, L('Land shared by several municipalities', 'Territorio compartido por varios municipios')));
       return;
     }
-    const before = ms.mode === 'change' ? muniShares(chamber, ms.base === '2023' ? '2023' : 'alt')[i] : null;
+    const before = ms.mode === 'change' ? muniShares(chamber, muniBaseKind(chamber, ms))[i] : null;
     const gv = groupView(ms);
     if (gv) {
       const ga = muniGroups(after, gv);
@@ -3907,16 +4237,50 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     layer.append(ring);
   }
 
-  function renderMapLegend(chamber, units) {
+  const barsIcon = () => sv('svg', { width: 26, height: 16, viewBox: '0 0 26 16', class: 'key-bars', 'aria-hidden': 'true' },
+    sv('rect', { x: 3, y: 2, width: 5, height: 6, style: 'fill:var(--ink-2)' }),
+    sv('rect', { x: 10, y: 8, width: 5, height: 6, style: 'fill:var(--ink-2)' }),
+    sv('rect', { x: 17, y: 4, width: 5, height: 4, style: 'fill:var(--ink-2)' }),
+    sv('line', { x1: 1, x2: 25, y1: 8, y2: 8, class: 'map-baseline' }));
+
+  // Useful-vote legend: seats each recipient gains at full coordination, the total, and the tint scale.
+  function renderTacticalLegend(legend, units) {
+    const ms = state.maps.congress;
+    const gv = groupView(ms);
+    const test = focusTest(ms.focus);
+    const plan = last.plan;
+    legend.textContent = '';
+    const gained = {};
+    for (const u of units) {
+      const before = u.noTac;
+      const after = u.tacFull;
+      for (const id of new Set([...Object.keys(before), ...Object.keys(after)])) {
+        const d = (after[id] || 0) - (before[id] || 0);
+        if (d > 0 && (!test || test(id))) gained[id] = (gained[id] || 0) + d;
+      }
+    }
+    const ids = Object.keys(gained).sort(byOrder);
+    if (!plan.gain) { legend.append(h('span', { class: 'muted' }, L('No seat to gain', 'Ningún escaño que ganar'))); return; }
+    legend.append(h('span', { class: 'map-key' }, barsIcon(), L('up: gained · down: lost', 'arriba: gana · abajo: pierde')));
+    for (const id of ids) legend.append(h('span', null, dot(id), gv ? shortName(id) : seatLabel(id), ' ', deltaSpan(gained[id])));
+    const ramp = `linear-gradient(to right, color-mix(in oklab, var(--ink-2) 88%, var(--map-tint)), color-mix(in oklab, var(--ink-2) 30%, var(--map-tint)))`;
+    legend.append(h('span', { class: 'map-key' }, L('switchers needed', 'cambios necesarios')), h('span', { class: 'map-key ramp-key' }, '3%', h('span', { class: 'ramp', style: `background:${ramp}`, 'aria-hidden': 'true' }), '90%'));
+    const votes = Math.round(plan.moved / 1000) * 1000;
+    legend.append(h('span', { class: 'muted' }, L(`${signed(plan.gain)} seats · ${plan.provinces} provinces · ${int(votes)} votes moved (${pct(plan.movedShare, 2)} of valid)`,
+      `${signed(plan.gain)} escaños · ${plan.provinces} provincias · ${int(votes)} votos cambian (${pct(plan.movedShare, 2)} de los válidos)`)));
+  }
+
+  function renderMapLegend(chamber, units, cmp) {
     const P = mapPrefix(chamber);
     const ms = state.maps[chamber];
     const legend = $(`${P}-legend`);
-    const isChange = ms.mode === 'change';
+    if (cmp && cmp.tactical) { renderTacticalLegend(legend, units); return; }
+    const isChange = !!cmp;
     const ids = new Set();
     for (const u of units) {
       const after = ms.mode === '2023' ? u.y2023 : u.sim;
       if (!isChange) { for (const [id, n] of Object.entries(after)) if (n) ids.add(id); continue; }
-      const before = u[ms.base === '2023' ? 'y2023' : 'alt'];
+      const before = u[cmp.before];
       for (const id of new Set([...Object.keys(before), ...Object.keys(after)])) if ((after[id] || 0) !== (before[id] || 0)) ids.add(id);
     }
     const test = focusTest(ms.focus);
@@ -3936,7 +4300,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       // Group totals for the view, then who is in each group.
       const sum = (key) => units.reduce((o, u) => { for (const [k, n] of Object.entries(u[key])) o[k] = (o[k] || 0) + n; return o; }, {});
       const after = sum(ms.mode === '2023' ? 'y2023' : 'sim');
-      const before = isChange ? sum(ms.base === '2023' ? 'y2023' : 'alt') : null;
+      const before = isChange ? sum(cmp.before) : null;
       const total = Object.values(after).reduce((a, b) => a + b, 0);
       const majority = Math.floor(total / 2) + 1;
       const keys = [...new Set([...Object.keys(after), ...Object.keys(before || {})])].sort(byOrder);
@@ -3958,16 +4322,17 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
   }
 
 
-  function renderFlows(chamber, units) {
+  function renderFlows(chamber, units, cmp) {
     const P = mapPrefix(chamber);
     const ms = state.maps[chamber];
     const wrap = $(`${P}-flows-wrap`);
     const table = $(`${P}-flows`);
     table.textContent = '';
-    wrap.hidden = ms.mode !== 'change';
+    wrap.hidden = !cmp;
     if (wrap.hidden) return;
-    const vs2023 = ms.base === '2023';
-    const beforeKey = vs2023 ? 'y2023' : 'alt';
+    const vs2023 = cmp.before === 'y2023';
+    const beforeKey = cmp.before;
+    const afterKey = cmp.after;
     const test = focusTest(ms.focus);
     const totB = {};
     const totA = {};
@@ -3977,7 +4342,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     const bump = (o, k, n) => { o[k] = (o[k] || 0) + n; };
     for (const u of units) {
       const b = u[beforeKey];
-      const a = u.sim;
+      const a = u[afterKey];
       for (const [id, n] of Object.entries(b)) bump(totB, id, n);
       for (const [id, n] of Object.entries(a)) bump(totA, id, n);
       for (const f of tileFlows(b, a)) {
@@ -3994,8 +4359,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     const list = (o, name) => Object.entries(o || {}).sort((x, y) => y[1] - x[1]).map(([id, n]) => `${name(id)} ${n}`).join(' · ') || '—';
     const ids = Object.keys(where).filter((id) => !test || test(id))
       .sort((a, b) => ((totA[b] || 0) - (totB[b] || 0)) - ((totA[a] || 0) - (totB[a] || 0)) || byOrder(a, b));
-    const beforeLabel = vs2023 ? '2023' : chamber === 'congress' ? L('Core only', 'Solo núcleo') : L('Separate', 'Separadas');
-    const afterLabel = vs2023 ? '2026' : L('Scenario', 'Escenario');
+    const { beforeLabel, afterLabel } = cmp;
     table.append(h('caption', { class: 'sr-only' }, L('Where seats are won and lost', 'Dónde se ganan y pierden escaños')), h('thead', null, h('tr', null,
       h('th', { scope: 'col' }, ms.focus === 'blocs' ? L('Bloc', 'Bloque') : ms.focus === 'coalitions' ? L('List', 'Lista') : L('Party', 'Partido')),
       h('th', { scope: 'col', class: 'r' }, beforeLabel),
@@ -4027,6 +4391,8 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
   // One-time listeners on the page's own controls.
   function buildControls() {
     $('retention').addEventListener('input', (e) => { state.retention = +e.target.value; syncOutputs(); update(); });
+    $('tactical').addEventListener('input', (e) => { state.tactical = { ...state.tactical, share: +e.target.value }; syncOutputs(); update(); });
+    $('tactical-psoe').addEventListener('change', (e) => { state.tactical = { ...state.tactical, psoe: e.target.checked }; update(); });
     $('efficiency').addEventListener('input', (e) => { state.front.efficiency = +e.target.value; syncOutputs(); update(); });
     const sel = $('poll-select');
     sel.addEventListener('change', () => { state.poll = sel.value; state.targets = roundTargets(targetsFor(sel.value)); syncControls(); update(); });
@@ -4236,9 +4602,17 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       : L(`Total ${nf(total)}% · others ${nf(100 - total)}%`, `Total ${nf(total)}% · otros ${nf(100 - total)}%`);
   }
 
+  // Useful-vote slider readout: the share and the left bloc's seats gained against 0%.
+  function syncTacticalOut() {
+    const share = state.tactical.share;
+    const d = last ? bloc(last.res.congress.totals).left - bloc(last.plan.base.totals).left : 0;
+    $('tactical-out').textContent = share ? `${share}% · ${signed(d)}` : '0%';
+  }
   function syncOutputs() {
     $('retention').value = String(state.retention);
     $('retention-out').textContent = `${state.retention}%`;
+    $('tactical').value = String(state.tactical.share);
+    syncTacticalOut();
     $('efficiency').value = String(state.front.efficiency);
     $('efficiency-out').textContent = `${state.front.efficiency}%`;
     $('spread').value = String(state.spread);
@@ -4279,6 +4653,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
       box.disabled = !!x.addsTo && !state.front.deals[x.addsTo];
     }
     for (const x of STAND_DOWNS) $(`sd-${x.id}`).checked = state.standDowns[x.id].on;
+    $('tactical-psoe').checked = !!state.tactical.psoe;
     $('poll-select').value = state.poll;
     $('adjust-cat').checked = state.adjustCat;
     $('adjust-cat').disabled = state.poll === 'eu2024';
@@ -4297,7 +4672,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     btn.disabled = true;
     btn.textContent = L('Running…', 'Calculando…');
     const bar = $(`${prefix}-mc-progress`);
-    const label = { joiners: state.joiners.slice(), front: { ...state.front, deals: { ...state.front.deals } }, standDowns: activeStandDowns() };
+    const label = { joiners: state.joiners.slice(), front: { ...state.front, deals: { ...state.front.deals } }, standDowns: activeStandDowns(), tactical: { ...state.tactical } };
     const tick = () => {
       const n = mc.step(Math.min(40, total - mc.n));
       bar.style.width = `${(n / total) * 100}%`;
@@ -4328,6 +4703,8 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
     let fa = label.joiners.length ? L(`Frente Amplio with ${label.joiners.map(shortName).join(', ')}`, `Frente Amplio con ${label.joiners.map(shortName).join(', ')}`) : L('Frente Amplio core only', 'Frente Amplio solo núcleo');
     const aside = (label.standDowns || []).filter((x) => (x.binding || !label.joiners.includes(x.party)) && !(chamber === 'congress' && x.constituencies));
     if (aside.length) fa += `; ${[...new Set(aside.map((x) => tx(STAND_DOWNS.find((y) => y.id === x.id) || x, 'short')))].join('; ')}`;
+    const tac = label.tactical;
+    if (chamber === 'congress' && tac && tac.share) fa += L(`; useful vote ${tac.share}%${tac.psoe ? ' incl. PSOE' : ''}`, `; voto útil ${tac.share}%${tac.psoe ? ' incl. PSOE' : ''}`);
     if (chamber === 'congress') return `${fa}.`;
     const scope = SCOPES.find((x) => x.id === label.front.scope);
     const front = label.front.scope === 'none' ? L('no joint lists', 'sin listas conjuntas')
@@ -4409,6 +4786,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
         h('li', null, h('b', null, 'Announced Senate deals. '), 'Each deal pools only its own partners in its own constituencies. Registered on 16 October: Senadores de progreso (PSOE, Frente Amplio’s parties, Compromís, CHA and others) in 47 constituencies, inferred as all except Catalonia, the Basque Country and the Canary Islands bar La Gomera; PSOE with Més, IU and Sumar on the four Balearic islands; and all progressive forces in La Gomera. Not registered: PSN-PSOE with Geroa Bai in Navarra, or Geroa Bai’s four-party fallback. The pacts table shows each one’s seat effect. ERC and EH Bildu repeat their joint Senate coalition (Izquierdas por la Independencia, 10 October); they stand in different constituencies, so it pools no votes, but the Senate map’s “Coalitions as they will run” highlight groups them, as it groups the PSOE with its joint lists and the PP with UPN.'),
         h('li', null, h('b', null, 'PP–Vox Senate deal. '), 'Reported on 17 October as being finalised, not confirmed by either party, on by default: Vox runs no Senate list in Sevilla, Badajoz, Cáceres, Huelva, Valencia, Tenerife, La Palma, Fuerteventura, Ibiza-Formentera (applied to both islands), Barcelona, Tarragona and Álava, and its candidates go on the PP\u2019s lists. Vox\u2019s voters there back the PP list as set in the sidebar (90% by default) and the rest abstain; the list\u2019s seats are credited to PP and Vox in proportion to the votes each brings. Senate only; Navarra is covered by the UPN–PP coalition.'),
         h('li', null, h('b', null, 'Congress. '), 'D’Hondt in each constituency with the 3% threshold on valid votes (blank ballots count towards the threshold); ties go to the list with more votes. When a party joins Frente Amplio its votes are added to the Frente Amplio list in every province where it stands, multiplied by the "follow" setting.'),
+        h('li', null, h('b', null, 'Useful vote. '), 'The slider is the share of each left list’s voters willing to switch to the left list best placed to win a seat in their province (PSOE’s voters only when it is included). In each province the model moves votes between the left lists so as to maximise the seats of the whole left bloc, so a PSOE seat is protected even when PSOE’s own voters stay put, and it moves no more than needed: only as many voters switch as the extra seat requires, each list keeps at least the rest of its vote, votes are conserved and the other lists are untouched. The list best placed to receive votes can change as the slider rises. The Useful vote map view shows the full-coordination plan: which list should receive votes in each province and the smallest share of switchers that wins the first extra seat. In the uncertainty run the transfers are fixed on the central projection, since voters decide before the result, so a tactical vote can misfire.'),
         h('li', null, h('b', null, 'Senate. '), 'Each party’s average vote per candidate in the 2023 Senate election is moved by the same provincial swing as its Congress vote. Each list fields as many candidates as voters can mark (3 in provinces, 2 in Gran Canaria, Mallorca, Tenerife, Ceuta and Melilla, 1 on the smaller islands), with votes fanned out ±2% around the list average; the top candidates win. A joint list pools its members’ per-candidate votes, multiplied by the "keeps" setting, and its seats are credited to members in proportion to their votes.'),
         h('li', null, h('b', null, 'Appointed senators. '), 'The 58 senators chosen by regional parliaments are held fixed at an estimate from the current chambers (PP 26, PSOE 19, Junts 3, Vox 2, and one each for ERC, EH Bildu, PNV, BNG, CC, Compromís, Geroa Bai and Más Madrid, counted with Frente Amplio).'),
         h('li', null, h('b', null, 'Uncertainty. '), 'Each simulation draws a national polling error for every party (standard deviation 0.35 × √share points by default, about ±2 points for PP) and an independent 10% provincial deviation, then reruns both chambers. Joint lists set to run "where they gain seats" keep the constituencies chosen on the central projection, since parties must register lists before the vote.'),
@@ -4464,6 +4842,7 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
         h('li', null, h('b', null, 'Acuerdos para el Senado. '), 'Cada acuerdo suma solo a sus socios en sus circunscripciones. Registrados el 16 de octubre: Senadores de progreso (PSOE, los partidos de Frente Amplio, Compromís, CHA y otros) en 47 circunscripciones, deducidas como todas salvo Cataluña, el País Vasco y Canarias excepto La Gomera; el PSOE con Més, IU y Sumar en las cuatro islas baleares; y todas las fuerzas progresistas en La Gomera. No registrados: PSN-PSOE con Geroa Bai en Navarra ni la alternativa de cuatro partidos de Geroa Bai. La tabla de pactos muestra el efecto de cada uno. ERC y EH Bildu repiten su coalición al Senado (Izquierdas por la Independencia, 10 de octubre); concurren en circunscripciones distintas, así que no suman votos, pero la vista «Coaliciones tal como se presentan» del mapa del Senado los agrupa, igual que agrupa al PSOE con sus listas conjuntas y al PP con UPN.'),
         h('li', null, h('b', null, 'Acuerdo PP–Vox para el Senado. '), 'Publicado el 17 de octubre como en fase final, sin confirmar por ninguno de los dos partidos, activado por defecto: Vox no presenta candidatura al Senado en Sevilla, Badajoz, Cáceres, Huelva, Valencia, Tenerife, La Palma, Fuerteventura, Ibiza-Formentera (aplicado a ambas islas), Barcelona, Tarragona y Álava, y sus candidatos van en las listas del PP. Sus votantes allí apoyan la lista del PP según el panel lateral (90% por defecto) y el resto se abstiene; los escaños de la lista se atribuyen al PP y a Vox en proporción a los votos que aporta cada uno. Solo Senado; Navarra queda cubierta por la coalición UPN–PP.'),
         h('li', null, h('b', null, 'Congreso. '), 'D’Hondt en cada circunscripción con la barrera del 3% sobre votos válidos (el voto en blanco cuenta para la barrera); los empates se resuelven a favor de la lista con más votos. Cuando un partido se une a Frente Amplio, sus votos se suman a la lista de Frente Amplio en cada provincia donde se presenta, multiplicados por el ajuste de «votantes que siguen».'),
+        h('li', null, h('b', null, 'Voto útil. '), 'El control es la parte de los votantes de cada lista de izquierdas dispuesta a cambiar su voto a la lista de izquierdas mejor situada para ganar un escaño en su provincia (los del PSOE solo si se incluye). En cada provincia el modelo mueve votos entre las listas de izquierdas para maximizar los escaños de todo el bloque, de modo que un escaño del PSOE queda protegido aunque sus votantes no se muevan, y mueve solo lo necesario: cambian tantos votantes como exige el escaño adicional, cada lista conserva al menos el resto de su voto, los votos se conservan y las demás listas no se tocan. La lista que conviene reforzar puede cambiar al subir el control. La vista «Voto útil» del mapa muestra el plan con coordinación total: qué lista debe recibir votos en cada provincia y la parte mínima de votantes que debe cambiar para ganar el primer escaño adicional. En la simulación de incertidumbre los trasvases se fijan sobre la proyección central, porque los votantes deciden antes del resultado, así que el voto útil puede fallar.'),
         h('li', null, h('b', null, 'Senado. '), 'El voto medio por candidato de cada partido en el Senado de 2023 se mueve con la misma variación provincial que su voto al Congreso. Cada lista presenta tantos candidatos como nombres puede marcar el votante (3 en las provincias, 2 en Gran Canaria, Mallorca, Tenerife, Ceuta y Melilla, 1 en las islas menores), con los votos repartidos ±2% en torno a la media de la lista; ganan los candidatos más votados. Una lista conjunta suma los votos por candidato de sus miembros, multiplicados por el ajuste de «votos que conserva», y sus escaños se atribuyen a los miembros en proporción a sus votos.'),
         h('li', null, h('b', null, 'Senadores designados. '), 'Los 58 senadores que eligen los parlamentos autonómicos se fijan con una estimación a partir de las cámaras actuales (PP 26, PSOE 19, Junts 3, Vox 2 y uno para ERC, EH Bildu, PNV, BNG, CC, Compromís, Geroa Bai y Más Madrid, contado con Frente Amplio).'),
         h('li', null, h('b', null, 'Incertidumbre. '), 'Cada simulación extrae un error de encuesta nacional para cada partido (desviación típica de 0,35 × √porcentaje puntos por defecto, unos ±2 puntos para el PP) y una desviación provincial independiente del 10%, y vuelve a calcular ambas cámaras. Las listas conjuntas fijadas «donde ganan escaños» mantienen las circunscripciones elegidas en la proyección central, porque las listas se registran antes de votar.'),
@@ -4629,4 +5008,5 @@ globalThis.ELECTION_MUNI = {"source":{"results":"Ministerio del Interior, Congre
 
 </script>
 
-</body></html>
+</body>
+</html>
