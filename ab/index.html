@@ -782,7 +782,6 @@ tr.tot td{border-top:1px solid var(--line);padding-top:5px;font-weight:600}
       <button data-t="ADV">Advance</button>
       <button data-t="VBMHQ">Special</button>
     </div>
-    <label class="chk" id="areasBox" hidden><input type="checkbox" id="areas" checked> Shade each poll's nearest voting areas</label>
     <div style="margin-top:10px">
       <select id="zoomTo" aria-label="Zoom to"></select>
     </div>
@@ -889,17 +888,15 @@ function topoFeatures(t,name){
 }
 
 /* ---------- state (kept in the address bar so a view can be shared) ---------- */
-const S={qi:QS.length-1, v:'eday', t:'all', areas:true};
+const S={qi:QS.length-1, v:'eday', t:'all'};
 (function(){
   const h=new URLSearchParams(location.hash.slice(1));
   const q=+h.get('q'); if(q>=1&&q<=QS.length) S.qi=q-1;
   if(['eday','adv','est','ed'].includes(h.get('v'))) S.v=h.get('v');
   if(['all','ORD','ADV','VBMHQ'].includes(h.get('t'))) S.t=h.get('t');
-  if(h.get('areas')==='0') S.areas=false;
 })();
 function saveHash(){
   const h=new URLSearchParams({q:S.qi+1,v:S.v}); if(S.v==='ed'&&S.t!=='all') h.set('t',S.t);
-  if(S.v==='adv'&&!S.areas) h.set('areas','0');
   history.replaceState(null,'','#'+h);
 }
 
@@ -907,14 +904,12 @@ function saveHash(){
 const map=L.map('map',{preferCanvas:true,zoomControl:true,minZoom:4,maxZoom:16,zoomSnap:0.5});
 map.createPane('shapes').style.zIndex=410;
 map.createPane('lines').style.zIndex=420;
-map.createPane('dots').style.zIndex=440;
 map.createPane('labels'); map.getPane('labels').style.zIndex=450; map.getPane('labels').style.pointerEvents='none';
 const CARTO_KEY='cb1_2ryg_1_6452d4a0f5bbcee9ee277353';   // as in bc_sim_v2's app.js
 const ATTR='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, &copy; <a href="https://carto.com/attributions">CARTO</a> | Results &amp; boundaries: <a href="https://www.elections.ab.ca">Elections Alberta</a>';
 L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png?key='+CARTO_KEY,{maxZoom:19,attribution:ATTR}).addTo(map);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png?key='+CARTO_KEY,{maxZoom:19,pane:'labels'}).addTo(map);
-const shapesR=L.canvas({pane:'shapes',padding:0.3}), linesR=L.canvas({pane:'lines',padding:0.3}),
-      dotsR=L.canvas({pane:'dots',padding:0.3,tolerance:4});
+const shapesR=L.canvas({pane:'shapes',padding:0.3}), linesR=L.canvas({pane:'lines',padding:0.3});
 
 const FEAT={va:topoFeatures(GEO,'va'),adv:topoFeatures(GEO,'adv'),ed:topoFeatures(GEO,'ed')};
 const LAYER={}, BYU={va:{},adv:{},ed:{}};
@@ -943,55 +938,28 @@ function makeLayer(kind){
 const edLines=L.geoJSON(FEAT.ed,{renderer:linesR,interactive:false,smoothFactor:0,
   style:()=>({fill:false,color:'#3a3a3a',weight:1.1,opacity:0.75})});
 
-/* advance poll dots: one per place, sized by the votes counted there */
-const DOTS=L.layerGroup();
-for(const [id,a] of Object.entries(D.adv)){
-  const pl=a.places.filter(p=>p.ll);
-  for(const p of pl){
-    const m=L.circleMarker(p.ll,{renderer:dotsR,pane:'dots',radius:4,weight:1.5,color:'#ffffff',fillOpacity:0.95});
-    m._k='dot'; m._u=id; m._share=pl.length;
-    m.on('mouseover',()=>hover(m)); m.on('mouseout',()=>unhover(m)); m.on('click',e=>{L.DomEvent.stop(e);pin(m);});
-    DOTS.addLayer(m);
-  }
-}
-function styleDots(){
-  const z=map.getZoom();
-  DOTS.eachLayer(m=>{
-    const c=D.adv[m._u].c, [y,n]=yn(c,S.qi);
-    // Over the shaded areas a dot only marks where the poll was (its colour is its area's).
-    // On its own, a dot's area is proportional to the votes; a place counted with others gets its share.
-    if(S.areas){ m.setStyle({fillColor:'#ffffff',color:'#222',weight:1.2}); m.setRadius(z>=10?4:3); return; }
-    const r=Math.max(3,Math.min(18,Math.sqrt((y+n)/m._share)*0.045*Math.pow(1.35,z-6)));
-    m.setStyle({fillColor:colour(y,n),color:'#fff',weight:1.5});
-    m.setRadius(r);
-  });
-}
-
 function draw(){
   const want=S.v==='eday'||S.v==='est'?'va':S.v;
   for(const k of ['va','adv','ed']){
-    if(k===want && !(k==='adv'&&!S.areas)){
+    if(k===want){
       if(!LAYER[k]) LAYER[k]=makeLayer(k);
       if(!map.hasLayer(LAYER[k])) LAYER[k].addTo(map);
       LAYER[k].setStyle(f=>styleFor(k,f.properties.u));
     } else if(LAYER[k]&&map.hasLayer(LAYER[k])) map.removeLayer(LAYER[k]);
   }
   if(S.v!=='ed') edLines.addTo(map); else map.removeLayer(edLines);
-  if(S.v==='adv'){DOTS.addTo(map); styleDots();} else map.removeLayer(DOTS);
   if(hovered) highlight(hovered,true);
   if(pinned&&!layerOn(pinned)) pinned=null;
   panel();
 }
-function layerOn(l){return l._k==='dot'?map.hasLayer(DOTS):LAYER[l._k]&&map.hasLayer(LAYER[l._k]);}
+function layerOn(l){return LAYER[l._k]&&map.hasLayer(LAYER[l._k]);}
 map.on('zoomend',()=>{
   for(const k of ['va','adv','ed']) if(LAYER[k]&&map.hasLayer(LAYER[k])) LAYER[k].setStyle(f=>styleFor(k,f.properties.u));
-  if(map.hasLayer(DOTS)) styleDots();
   if(hovered) highlight(hovered,true);
 });
 
 /* ---------- hover and pin ---------- */
 function highlight(l,on){
-  if(l._k==='dot'){ l.setStyle(on?{weight:3,color:'#000'}:{weight:S.areas?1.2:1.5,color:S.areas?'#222':'#fff'}); return; }
   if(on){ l.setStyle({color:'#111',weight:2.2,opacity:1}); l.bringToFront(); }
   else l.setStyle(styleFor(l._k,l.feature.properties.u));
 }
@@ -1032,8 +1000,7 @@ function legend(){
   $('lb').innerHTML=['80+','70','65','60','55','50','50','55','60','65','70','80+']
     .map(s=>`<span>${s}</span>`).join('');
   $('legh').textContent='Winning side’s share of the vote (%)';
-  $('legx').innerHTML=`<span><b style="background:${NONE}"></b>No votes recorded</span>`+
-    (S.v==='adv'?`<span><b style="background:#fff;border:1.5px solid #222;border-radius:50%"></b>${S.areas?'Advance poll':'Advance poll, sized by votes'}</span>`:'');
+  $('legx').innerHTML=`<span><b style="background:${NONE}"></b>No votes recorded</span>`;
   $('legnote').innerHTML=S.v==='eday'
     ? 'Ballots cast in each voting area on 19 October. Advance, mobile and special ballots are not in these shapes.'
     : S.v==='est'
@@ -1065,8 +1032,8 @@ function bigNums(y,n,est){
 }
 function placeLine(p){
   const where=[p.address,p.city].filter(Boolean).join(', ');
-  const how=p.located==='town'?' (mapped at the town’s centre)':p.located==='community'?' (mapped at the community)':p.located==='street'?' (mapped on the street)':'';
-  return `${p.name}${where?` — ${where}`:''}${p.ll?how:' (no published address; not on the map)'}`;
+  const how=p.located==='town'?' (placed at the town’s centre)':p.located==='community'?' (placed at the community)':p.located==='street'?' (placed on the street)':'';
+  return `${p.name}${where?` — ${where}`:''}${p.ll?how:' (no published address)'}`;
 }
 function readout(l){
   const pinTxt=l&&l===pinned?'<span class="pin">pinned · tap again to release</span>':'';
@@ -1083,8 +1050,8 @@ function readout(l){
         `${a&&hasArea.has(v.adv)?`the ${a.name} advance poll`:'the division’s advance polls'} and of ${D.ed[e].name}’s mobile and special ballots.</div>`:'')+
       allQs(c)+
       (a&&!est?`<div class="note">Nearest advance poll in the division: ${a.name}.</div>`:'');
-  } else if(l._k==='adv'||l._k==='dot'){
-    const u=l._k==='dot'?l._u:l.feature.properties.u, a=D.adv[u], c=a.c, [y,n]=yn(c,S.qi);
+  } else if(l._k==='adv'){
+    const u=l.feature.properties.u, a=D.adv[u], c=a.c, [y,n]=yn(c,S.qi);
     kind='Advance poll';
     const pl=a.places;
     h=`${pinTxt}<div class="t">${a.name}</div><div class="s">${D.ed[a.ed].name}</div>`+bigNums(y,n)+
@@ -1102,7 +1069,7 @@ function readout(l){
 function panel(){
   document.querySelectorAll('#views button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===S.v));
   document.querySelectorAll('#edtypes button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.t===S.t));
-  $('edtypes').hidden=S.v!=='ed'; $('areasBox').hidden=S.v!=='adv'; $('areas').checked=S.areas;
+  $('edtypes').hidden=S.v!=='ed';
   document.querySelectorAll('#qs .q').forEach(b=>b.setAttribute('aria-pressed',+b.dataset.i===S.qi));
   $('qtext').textContent=`Question ${QS[S.qi].n}: ${QS[S.qi].text}`+(QS[S.qi].id===11?' Option 1: remain a province in Canada. Option 2: start the legal process for a binding referendum on separation.':'');
   legend(); provTable(); readout(pinned||hovered);
@@ -1112,7 +1079,6 @@ function refresh(){ saveHash(); draw(); }
 /* ---------- controls ---------- */
 document.querySelectorAll('#views button').forEach(b=>b.onclick=()=>{S.v=b.dataset.v; if(pinned){highlight(pinned,false);pinned=null;} refresh();});
 document.querySelectorAll('#edtypes button').forEach(b=>b.onclick=()=>{S.t=b.dataset.t; refresh();});
-$('areas').onchange=()=>{S.areas=$('areas').checked; if(pinned&&pinned._k==='adv'){highlight(pinned,false);pinned=null;} refresh();};
 const VIEWS={Alberta:[[48.99,-120.0],[60.0,-110.0]],Calgary:[[50.84,-114.32],[51.22,-113.86]],
              Edmonton:[[53.39,-113.72],[53.68,-113.27]],'Red Deer':[[52.22,-113.89],[52.33,-113.73]],
              Lethbridge:[[49.64,-112.92],[49.74,-112.76]]};
@@ -1131,11 +1097,11 @@ const upd=new Date(D.updated);
 $('sub').innerHTML=`Unofficial results by voting area and advance poll, from Elections Alberta’s results feed (updated ${upd.toLocaleString('en-CA',{dateStyle:'medium',timeStyle:'short',timeZone:'America/Edmonton'})} Mountain). Official results are due 29 October.`;
 const nAdv=Object.keys(D.adv).length, noLoc=Object.values(D.adv).filter(a=>!a.places.some(p=>p.ll));
 const hasArea=new Set(FEAT.adv.map(f=>f.properties.u));
-const dotOnly=Object.entries(D.adv).filter(([id,a])=>!hasArea.has(id)&&a.places.some(p=>p.ll)).map(([,a])=>a);
+const noArea=Object.entries(D.adv).filter(([id,a])=>!hasArea.has(id)&&a.places.some(p=>p.ll)).map(([,a])=>a);
 const list=as=>as.map(a=>`“${a.name}” (${D.ed[a.ed].name}, ${fmt(yn(a.c,QS.length-1).reduce((x,y)=>x+y))} votes)`).join(' and ');
 $('about').innerHTML=
   `<p><b>Election day</b> is the ${fmt(Object.keys(D.va).length)} voting areas, drawn from Elections Alberta’s 2026 voting-area boundaries. ${D.zero.length} areas show no votes: where a voting place counted several areas’ ballot boxes together, the combined count is reported under one of them.</p>`+
-  `<p><b>Advance polls</b> are the ${nAdv} advance counts, placed at the addresses on Elections Alberta’s list of advance voting places. Where a division counted several places together (e.g. “Ryley / Tofield / Viking”), the dots share the result and their areas form one shape. Most places are at their street address; rural halls without one are at their hamlet or First Nation. ${list(noLoc)} ${noLoc.length>1?'have':'has'} no published location and ${noLoc.length>1?'are':'is'} only in the division totals. ${list(dotOnly)} sat outside ${dotOnly.length>1?'their divisions':'its division'} and ${dotOnly.length>1?'are':'is'} nearest to none of ${dotOnly.length>1?'their':'its'} voting areas, so ${dotOnly.length>1?'they appear':'it appears'} as ${dotOnly.length>1?'dots':'a dot'} without an area.</p>`+
+  `<p><b>Advance polls</b> are the ${nAdv} advance counts. Each voting area takes the result of the nearest advance poll in its division, found from the addresses on Elections Alberta’s list of advance voting places. Most places are at their street address; rural halls without one are at their hamlet or First Nation. Where a division counted several places together (e.g. “Ryley / Tofield / Viking”), their areas form one shape. ${list(noLoc)} ${noLoc.length>1?'have':'has'} no published location, and ${list(noArea)} sat outside ${noArea.length>1?'their divisions':'its division'} and ${noArea.length>1?'are':'is'} nearest to none of ${noArea.length>1?'their':'its'} voting areas, so these polls are not on the advance map, only in the division totals and the estimate.</p>`+
   `<p><b>Mobile polls</b> (care homes and the like) and <b>special ballots</b> (by mail) are reported for whole divisions, so on the map they appear only in the estimate and under Divisions.</p>`+
   `<p><b>All ballots (est.)</b> shares every ballot that wasn’t cast on election day out among the voting areas of the smallest geography it was counted in. Each advance poll’s votes go to its area of nearest voting areas; polls without an area, mobile polls and special ballots go to the whole division. Within that geography, each answer is shared in proportion to that answer’s election-day votes in each area. That keeps every area’s lean relative to its neighbours and adds up exactly to the official count, but it assumes advance and mail voters in an area lean the way its election-day voters do, relative to the rest of the geography. Areas with no election-day votes get none.</p>`+
   `<p>The feed numbers the separation question 11; it was Question 10 on the ballot. Shares leave out rejected ballots, which the feed doesn’t report.</p>`;
