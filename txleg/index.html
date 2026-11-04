@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="description" content="Texas House and Senate districts colored by who is leading in the Nov. 3, 2026 general election, with flips hatched and each district's 2024 presidential result. AP returns as of 11:59 p.m. CT.">
+<meta name="description" content="Texas House and Senate districts colored by who is leading in the Nov. 3, 2026 general election, updated every minute from the Associated Press, with flips hatched and each district's 2024 presidential result.">
 <style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
 <title>Texas Legislature 2026</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -25,6 +25,7 @@
   --rep-hold: #dbcdcb;
   --none: #a7acb6;
   --hatch: #15171c;
+  --live: #1d8a4e;
   --sans: 'Libre Franklin', 'Franklin Gothic Medium', 'Helvetica Neue', Arial, sans-serif;
   --mono: 'DM Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 }
@@ -32,13 +33,13 @@
   :root:not([data-theme="light"]) {
     --bg: #111317; --surface: #1a1d22; --fg: #e8eaee; --muted: #989eab; --line: #2b2f37;
     --dem: #5d9be5; --dem-tint: #2d4c75; --dem-hold: #262d38; --rep: #e96a5f; --rep-tint: #6c3531; --rep-hold: #352a2a;
-    --none: #5a5f69; --hatch: #f4f5f7; color-scheme: dark;
+    --none: #5a5f69; --hatch: #f4f5f7; --live: #45c47c; color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #111317; --surface: #1a1d22; --fg: #e8eaee; --muted: #989eab; --line: #2b2f37;
   --dem: #5d9be5; --dem-tint: #2d4c75; --dem-hold: #262d38; --rep: #e96a5f; --rep-tint: #6c3531; --rep-hold: #352a2a;
-  --none: #5a5f69; --hatch: #f4f5f7; color-scheme: dark;
+  --none: #5a5f69; --hatch: #f4f5f7; --live: #45c47c; color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -60,6 +61,11 @@ body {
 .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 h1 { margin: 2px 0 0; font-size: clamp(28px, 5vw, 40px); font-weight: 800; letter-spacing: -.015em; line-height: 1.05; text-wrap: balance; }
 .asof { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+.asof { display: flex; align-items: baseline; gap: 7px; }
+.live-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--live); transform: translateY(-1px); animation: livepulse 2s ease-in-out infinite; }
+.live-dot.stale { background: var(--muted); animation: none; }
+@keyframes livepulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px; background: var(--surface); }
 .seg button {
   font: 600 14px/1 var(--sans); color: var(--muted); background: none; border: 0;
@@ -197,7 +203,7 @@ footer a { color: inherit; }
     <div>
       <div class="eyebrow">General election · Nov. 3, 2026</div>
       <h1>Texas Legislature</h1>
-      <p class="asof">Associated Press returns as of 11:59 p.m. CT. A snapshot; counting continues.</p>
+      <p class="asof"><span class="live-dot stale" id="live-dot" hidden></span><span id="asof">Associated Press returns as of 11:59 p.m. CT, Nov. 3.</span></p>
     </div>
     <div class="seg" role="group" aria-label="Chamber">
       <button type="button" id="btn-H" aria-pressed="true">House</button>
@@ -235,7 +241,7 @@ footer a { color: inherit; }
   </div>
 
   <footer>
-    <span>Returns: Associated Press, via the <a href="https://apps.texastribune.org/features/2026/texas-general-election-live-results-2026/" target="_blank" rel="noopener">Texas Tribune live results</a>.</span>
+    <span>Returns refresh every minute from the Texas Tribune’s Associated Press feed; the page opens with a saved copy. Returns: Associated Press, via the <a href="https://apps.texastribune.org/features/2026/texas-general-election-live-results-2026/" target="_blank" rel="noopener">Texas Tribune live results</a>.</span>
     <span>Flips compare the leader with the party holding the seat before the election (2024 result for open and vacant seats). Senate seats not on the ballot count for the party that holds them.</span>
     <span>District lines: 2021 enacted House and Senate plans.</span>
     <span>2024 president: two-party margin by current district, from the Texas Legislative Council district election workbooks (RED-206). The tick on the scale marks the statewide result.</span>
@@ -497,6 +503,72 @@ $('closest').addEventListener('click', e => { const b = e.target.closest('button
 let start = 'H';
 try { const v = localStorage.getItem('tx-lege-ch'); if (v === 'S' || v === 'H') start = v; } catch (e) {}
 setChamber(start);
+const LIVE = {
+  tz: 'America/Chicago', tzLabel: 'CT', what: 'Associated Press returns', where: 'the Texas Tribune feed',
+  async load() {
+    const r = await fetch('https://s3.amazonaws.com/sos-test-2.texastribune.org/2026_general/republic_json/results_FLAT.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const json = await r.json(), races = {}, specials = {};
+    for (const x of json) {
+      if (x.office !== 'Texas House' && x.office !== 'Texas Senate') continue;
+      const key = (x.office === 'Texas Senate' ? 'S' : 'H') + x.office_division;
+      const c = (x.candidacies || []).map(k => ({ p: (k.party || '?')[0], n: k.name, v: k.votes || 0, w: k.is_winner ? 1 : 0, i: k.is_incumbent ? 1 : 0 }))
+        .sort((a, b) => b.v - a.v);
+      (x.election_type === 'special' ? specials : races)[key] = { eevp: +x.eevp || 0, called: x.is_called ? 1 : 0, res: x.contest_result || '', c };
+    }
+    const lm = r.headers.get('last-modified');
+    return { races, specials, stamp: lm ? new Date(lm) : null };
+  },
+  ok(d) { const k = Object.keys(d.races); return k.filter(x => x[0] === 'H').length === 150 && k.filter(x => x[0] === 'S').length >= 16; },
+};
+const MONTHS = ['Jan.', 'Feb.', 'March', 'April', 'May', 'June', 'July', 'Aug.', 'Sept.', 'Oct.', 'Nov.', 'Dec.'];
+function stampText(d) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: LIVE.tz, month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
+    .formatToParts(d).map(x => [x.type, x.value]));
+  return `${p.hour}:${p.minute} ${p.dayPeriod === 'AM' ? 'a.m.' : 'p.m.'} ${LIVE.tzLabel}, ${MONTHS[+p.month - 1]} ${p.day}`;
+}
+const live = { sig: null, changed: null, checked: null, okOnce: false, busy: false };
+function liveStatus(err) {
+  const dot = $('live-dot'), el = $('asof');
+  dot.hidden = false;
+  dot.classList.toggle('stale', !!err);
+  if (!live.okOnce) {
+    if (err) el.textContent = el.dataset.saved + ' Live updates are unavailable here, so this is a saved copy.';
+    return;
+  }
+  const when = live.stamp ? ` as of ${stampText(live.stamp)}` : `, checked ${stampText(live.checked)}`;
+  el.textContent = err
+    ? `${LIVE.what}${when}. Couldn't reach ${LIVE.where} just now; retrying every minute.`
+    : `${LIVE.what}${when}. Updates every minute.`;
+}
+async function liveTick() {
+  if (live.busy || document.hidden) return;
+  live.busy = true;
+  try {
+    const d = await LIVE.load();
+    if (!LIVE.ok(d)) throw new Error('incomplete feed');
+    live.checked = new Date();
+    const sig = JSON.stringify([d.races, d.specials || null]);
+    if (sig !== live.sig) {
+      live.sig = sig;
+      live.changed = live.checked;
+      DATA.races = d.races;
+      if (d.specials) DATA.specials = d.specials;
+      drawMaps(); drawTally(); drawLegend(); drawClosest(); drawPicker(); paintSelection(); drawCard();
+    }
+    live.stamp = d.stamp;
+    live.okOnce = true;
+    liveStatus(null);
+  } catch (e) {
+    liveStatus(e);
+  } finally {
+    live.busy = false;
+  }
+}
+$('asof').dataset.saved = $('asof').textContent;
+liveTick();
+setInterval(liveTick, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) liveTick(); });
 </script>
 </body>
 </html>
